@@ -51,4 +51,16 @@ interface TagDao {
     fun observeTagCounts(
         libraryRootUriString: String
     ): Flow<List<TagCountItem>>
+
+    @Query(
+        """
+    UPDATE book_tag
+    SET bookUriString = :newUriString
+    WHERE bookUriString = :oldUriString
+    """
+    )
+    suspend fun migrateBookUri(
+        oldUriString: String,
+        newUriString: String
+    )
 }

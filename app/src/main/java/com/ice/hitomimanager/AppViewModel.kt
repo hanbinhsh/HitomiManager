@@ -30,6 +30,7 @@ import com.ice.hitomimanager.data.model.MatchTaskStatus
 import com.ice.hitomimanager.data.model.SettingsTab
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
+import com.ice.hitomimanager.data.model.LibraryLayoutMode
 
 data class LibraryUiState(
     val folderUriString: String? = null,
@@ -85,6 +86,8 @@ data class SettingsUiState(
     val settingsTab: SettingsTab = SettingsTab.General,
 
     val showRematchButtonInLibrary: Boolean = true,
+    val libraryLayoutMode: LibraryLayoutMode = LibraryLayoutMode.List,
+    val libraryGridColumns: Int = 3,
 )
 
 data class ReaderUiState(
@@ -168,6 +171,14 @@ class AppViewModel(
             autoMatchSamePageFirst = prefs.getBoolean(KEY_AUTO_MATCH_SAME_PAGE_FIRST, true),
             autoOpenNextReviewTask = prefs.getBoolean(KEY_AUTO_OPEN_NEXT_REVIEW_TASK, true),
             showRematchButtonInLibrary = prefs.getBoolean(KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY, true),
+            libraryLayoutMode = runCatching {
+                LibraryLayoutMode.valueOf(
+                    prefs.getString(KEY_LIBRARY_LAYOUT_MODE, LibraryLayoutMode.List.name)
+                        ?: LibraryLayoutMode.List.name
+                )
+            }.getOrDefault(LibraryLayoutMode.List),
+
+            libraryGridColumns = prefs.getInt(KEY_LIBRARY_GRID_COLUMNS, 3),
         )
     )
 
@@ -1464,6 +1475,55 @@ class AppViewModel(
         }
     }
 
+    fun matchById() {
+        val rawInput = _matchState.value.query.trim()
+
+        val galleryId = Regex("\\d+")
+            .find(rawInput)
+            ?.value
+
+        if (galleryId.isNullOrBlank()) {
+            _matchState.update {
+                it.copy(
+                    error = "请输入有效的 Gallery ID"
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _matchState.update {
+                it.copy(
+                    isSearching = true,
+                    error = null,
+                    candidates = emptyList()
+                )
+            }
+
+            val meta = runCatching {
+                hitomiRepository.fetchMetaById(galleryId)
+            }.getOrNull()
+
+            if (meta == null) {
+                _matchState.update {
+                    it.copy(
+                        isSearching = false,
+                        error = "没有找到 ID：$galleryId"
+                    )
+                }
+                return@launch
+            }
+
+            _matchState.update {
+                it.copy(
+                    isSearching = false,
+                    error = null,
+                    candidates = listOf(meta)
+                )
+            }
+        }
+    }
+
     private fun cleanFileName(
         name: String,
         removeUnderscore: Boolean,
@@ -1680,6 +1740,39 @@ class AppViewModel(
         }
     }
 
+    fun setLibraryLayoutMode(mode: LibraryLayoutMode) {
+        prefs.edit()
+            .putString(KEY_LIBRARY_LAYOUT_MODE, mode.name)
+            .apply()
+
+        _settingsState.update {
+            it.copy(libraryLayoutMode = mode)
+        }
+    }
+
+    fun toggleLibraryLayoutMode() {
+        val current = _settingsState.value.libraryLayoutMode
+        val next = if (current == LibraryLayoutMode.List) {
+            LibraryLayoutMode.Grid
+        } else {
+            LibraryLayoutMode.List
+        }
+
+        setLibraryLayoutMode(next)
+    }
+
+    fun setLibraryGridColumns(columns: Int) {
+        val fixed = columns.coerceIn(2, 6)
+
+        prefs.edit()
+            .putInt(KEY_LIBRARY_GRID_COLUMNS, fixed)
+            .apply()
+
+        _settingsState.update {
+            it.copy(libraryGridColumns = fixed)
+        }
+    }
+
     companion object {
         private const val KEY_FOLDER_URI = "folder_uri"
         private const val KEY_SHOW_TAG_NAMESPACE_PREFIX = "show_tag_namespace_prefix"
@@ -1691,5 +1784,7 @@ class AppViewModel(
         private const val KEY_AUTO_MATCH_EXACT_TITLE = "auto_match_exact_title"
         private const val KEY_AUTO_MATCH_UNIQUE_SAME_PAGE = "auto_match_unique_same_page"
         private const val KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY = "show_rematch_button_in_library"
+        private const val KEY_LIBRARY_LAYOUT_MODE = "library_layout_mode"
+        private const val KEY_LIBRARY_GRID_COLUMNS = "library_grid_columns"
     }
 }

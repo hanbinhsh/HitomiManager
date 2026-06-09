@@ -83,6 +83,9 @@ fun AppRoot(
                 showRematchButtonInLibrary = settingsState.showRematchButtonInLibrary,
                 onRetryFailedExceptNoCandidates = viewModel::retryFailedMatchTasksExceptNoCandidates,
                 onStartBatchMatch = viewModel::startBatchMatchUnmatched,
+                libraryLayoutMode = settingsState.libraryLayoutMode,
+                libraryGridColumns = settingsState.libraryGridColumns,
+                onToggleLibraryLayoutMode = viewModel::toggleLibraryLayoutMode,
                 onOpenMatchTask = { task ->
                     if (task.status == MatchTaskStatus.Failed) {
                         viewModel.startMatchFromTask(task)
@@ -149,6 +152,7 @@ fun AppRoot(
                 },
                 onQueryChange = viewModel::updateMatchQuery,
                 onSearch = viewModel::searchMatch,
+                onIdMatch = viewModel::matchById,
                 onBind = { meta ->
                     viewModel.bindMatch(meta)
                     navController.popBackStack()
@@ -176,6 +180,7 @@ fun AppRoot(
                 onStartBatchMatch = viewModel::startBatchMatchUnmatched,
                 onClearDatabase = viewModel::clearDatabase,
                 onShowRematchButtonInLibraryChange = viewModel::setShowRematchButtonInLibrary,
+                onLibraryGridColumnsChange = viewModel::setLibraryGridColumns,
                 onOpenTasks = {
                     viewModel.setHomeTab(HomeTab.Tasks)
                     navController.popBackStack()

@@ -64,9 +64,15 @@ import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.layout.height
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewList
+import com.ice.hitomimanager.data.model.LibraryLayoutMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,6 +95,9 @@ fun LibraryScreen(
     showRematchButtonInLibrary: Boolean,
     onRetryFailedExceptNoCandidates: () -> Unit,
     onStartBatchMatch: () -> Unit,
+    libraryLayoutMode: LibraryLayoutMode,
+    libraryGridColumns: Int,
+    onToggleLibraryLayoutMode: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -97,6 +106,23 @@ fun LibraryScreen(
                     Text("Hitomi Manager")
                 },
                 actions = {
+                    IconButton(
+                        onClick = onToggleLibraryLayoutMode
+                    ) {
+                        Icon(
+                            imageVector = if (libraryLayoutMode == LibraryLayoutMode.Grid) {
+                                Icons.Filled.ViewList
+                            } else {
+                                Icons.Filled.GridView
+                            },
+                            contentDescription = if (libraryLayoutMode == LibraryLayoutMode.Grid) {
+                                "切换到列表布局"
+                            } else {
+                                "切换到网格布局"
+                            }
+                        )
+                    }
+
                     IconButton(
                         onClick = onRescan,
                         enabled = state.folderUriString != null && !state.isScanning
@@ -144,6 +170,8 @@ fun LibraryScreen(
                     state = state,
                     showTagNamespacePrefix = showTagNamespacePrefix,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    libraryLayoutMode = libraryLayoutMode,
+                    libraryGridColumns = libraryGridColumns,
                     onClearTagFilters = onClearTagFilters,
                     onClearSearch = onClearSearch,
                     onOpenBook = onOpenBook,
@@ -171,6 +199,8 @@ fun LibraryScreen(
                         .padding(paddingValues),
                     state = state,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    libraryLayoutMode = libraryLayoutMode,
+                    libraryGridColumns = libraryGridColumns,
                     onSearchQueryChange = onSearchQueryChange,
                     onClearSearch = onClearSearch,
                     onOpenBook = onOpenBook,
@@ -225,6 +255,8 @@ private fun LibraryContent(
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
     showRematchButtonInLibrary: Boolean,
+    libraryLayoutMode: LibraryLayoutMode,
+    libraryGridColumns: Int,
     onClearTagFilters: () -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
@@ -275,8 +307,10 @@ private fun LibraryContent(
                 text = "没有符合条件的作品。"
             )
         } else {
-            BookList(
+            BookShelfContent(
                 books = state.books,
+                layoutMode = libraryLayoutMode,
+                gridColumns = libraryGridColumns,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
@@ -293,7 +327,9 @@ private fun SearchContent(
     onSearchQueryChange: (String) -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
-    onMatchBook: (BookItem) -> Unit
+    onMatchBook: (BookItem) -> Unit,
+    libraryLayoutMode: LibraryLayoutMode,
+    libraryGridColumns: Int,
 ) {
     Column(
         modifier = modifier
@@ -322,8 +358,10 @@ private fun SearchContent(
             }
         }
 
-        BookList(
+        BookShelfContent(
             books = state.books,
+            layoutMode = libraryLayoutMode,
+            gridColumns = libraryGridColumns,
             showRematchButtonInLibrary = showRematchButtonInLibrary,
             onOpenBook = onOpenBook,
             onMatchBook = onMatchBook
@@ -1211,6 +1249,104 @@ private fun CompactFilterTagChip(
             },
             modifier = Modifier.height(CompactTagChipHeight)
         )
+    }
+}
+
+@Composable
+private fun BookShelfContent(
+    books: List<BookItem>,
+    layoutMode: LibraryLayoutMode,
+    gridColumns: Int,
+    showRematchButtonInLibrary: Boolean,
+    onOpenBook: (BookItem) -> Unit,
+    onMatchBook: (BookItem) -> Unit
+) {
+    if (books.isEmpty()) {
+        EmptyHint("没有符合条件的作品。")
+        return
+    }
+
+    when (layoutMode) {
+        LibraryLayoutMode.List -> {
+            BookList(
+                books = books,
+                showRematchButtonInLibrary = showRematchButtonInLibrary,
+                onOpenBook = onOpenBook,
+                onMatchBook = onMatchBook
+            )
+        }
+
+        LibraryLayoutMode.Grid -> {
+            BookGrid(
+                books = books,
+                gridColumns = gridColumns,
+                onOpenBook = onOpenBook
+            )
+        }
+    }
+}
+
+@Composable
+private fun BookGrid(
+    books: List<BookItem>,
+    gridColumns: Int,
+    onOpenBook: (BookItem) -> Unit
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(gridColumns.coerceIn(2, 6)),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 8.dp,
+            top = 8.dp,
+            end = 8.dp,
+            bottom = 24.dp
+        ),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(
+            items = books,
+            key = { it.uriString }
+        ) { book ->
+            GridBookCoverItem(
+                book = book,
+                onClick = {
+                    onOpenBook(book)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun GridBookCoverItem(
+    book: BookItem,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(0.7f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+    ) {
+        val coverPath = book.coverFilePath
+
+        if (coverPath != null) {
+            AsyncImage(
+                model = File(coverPath),
+                contentDescription = book.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = "无封面",
+                modifier = Modifier.align(Alignment.Center),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

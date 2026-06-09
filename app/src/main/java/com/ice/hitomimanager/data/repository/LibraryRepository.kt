@@ -18,6 +18,7 @@ import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import com.ice.hitomimanager.data.model.MatchTaskStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.room.withTransaction
 
 class LibraryRepository(
     private val context: Context
@@ -180,10 +181,59 @@ class LibraryRepository(
         val scannedBooks = scanner.scan(treeUri)
 
         for (scanned in scannedBooks) {
-            val old = bookDao.findByUri(scanned.uriString)
+            db.withTransaction {
+                val oldBySameUri = bookDao.findByUri(scanned.uriString)
 
-            val entity = if (old == null) {
-                BookEntity(
+                if (oldBySameUri != null) {
+                    val entity = oldBySameUri.copy(
+                        libraryRootUriString = rootUriString,
+                        displayName = scanned.displayName,
+                        fileSize = scanned.fileSize,
+                        lastModified = scanned.lastModified,
+                        coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath,
+                        updatedAt = now
+                    )
+
+                    bookDao.upsert(entity)
+                    return@withTransaction
+                }
+
+                val movedOld = bookDao.findReusableMovedBook(
+                    displayName = scanned.displayName,
+                    fileSize = scanned.fileSize,
+                    uriString = scanned.uriString
+                )
+
+                if (movedOld != null) {
+                    bookDao.migrateBookUri(
+                        oldUriString = movedOld.uriString,
+                        newUriString = scanned.uriString,
+                        libraryRootUriString = rootUriString,
+                        displayName = scanned.displayName,
+                        fileSize = scanned.fileSize,
+                        lastModified = scanned.lastModified,
+                        coverFilePath = scanned.coverFilePath,
+                        updatedAt = now
+                    )
+
+                    tagDao.migrateBookUri(
+                        oldUriString = movedOld.uriString,
+                        newUriString = scanned.uriString
+                    )
+
+                    matchTaskDao.migrateBookUri(
+                        oldUriString = movedOld.uriString,
+                        newUriString = scanned.uriString,
+                        libraryRootUriString = rootUriString,
+                        displayName = scanned.displayName,
+                        coverFilePath = scanned.coverFilePath,
+                        updatedAt = now
+                    )
+
+                    return@withTransaction
+                }
+
+                val newEntity = BookEntity(
                     displayName = scanned.displayName,
                     uriString = scanned.uriString,
                     libraryRootUriString = rootUriString,
@@ -193,22 +243,13 @@ class LibraryRepository(
                     createdAt = now,
                     updatedAt = now
                 )
-            } else {
-                old.copy(
-                    libraryRootUriString = rootUriString,
-                    displayName = scanned.displayName,
-                    fileSize = scanned.fileSize,
-                    lastModified = scanned.lastModified,
-                    coverFilePath = scanned.coverFilePath ?: old.coverFilePath,
-                    updatedAt = now
-                )
-            }
 
-            bookDao.upsert(entity)
+                bookDao.upsert(newEntity)
+            }
         }
 
-        // 不再 deleteMissing。
-        // 否则切换目录时可能误删其他目录数据。
+        // 不要 deleteMissing。
+        // 多目录模式下，扫描 B 目录时不能删除 A 目录的数据。
     }
 
     fun observeMatchTask(taskId: Long): Flow<MatchTaskEntity?> {

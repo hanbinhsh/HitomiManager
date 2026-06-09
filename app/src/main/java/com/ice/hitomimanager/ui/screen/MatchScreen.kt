@@ -46,6 +46,7 @@ fun MatchScreen(
     onBack: () -> Unit,
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
+    onIdMatch: () -> Unit,
     onBind: (HitomiBookMeta) -> Unit
 ) {
     Scaffold(
@@ -86,7 +87,7 @@ fun MatchScreen(
                     value = state.query,
                     onValueChange = onQueryChange,
                     label = {
-                        Text("搜索标题")
+                        Text("搜索标题 / Gallery ID")
                     },
                     modifier = Modifier
                         .weight(1f)
@@ -94,11 +95,22 @@ fun MatchScreen(
                     singleLine = true
                 )
 
-                Button(
-                    onClick = onSearch,
-                    enabled = !state.isSearching
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("搜索")
+                    Button(
+                        onClick = onSearch,
+                        enabled = !state.isSearching
+                    ) {
+                        Text("搜索")
+                    }
+
+                    Button(
+                        onClick = onIdMatch,
+                        enabled = !state.isSearching
+                    ) {
+                        Text("ID匹配")
+                    }
                 }
             }
 

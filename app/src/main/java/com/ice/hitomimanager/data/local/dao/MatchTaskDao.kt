@@ -139,4 +139,25 @@ interface MatchTaskDao {
         errorMessage: String,
         updatedAt: Long
     )
+
+    @Query(
+        """
+    UPDATE match_task
+    SET 
+        bookUriString = :newUriString,
+        libraryRootUriString = :libraryRootUriString,
+        displayName = :displayName,
+        coverFilePath = COALESCE(:coverFilePath, coverFilePath),
+        updatedAt = :updatedAt
+    WHERE bookUriString = :oldUriString
+    """
+    )
+    suspend fun migrateBookUri(
+        oldUriString: String,
+        newUriString: String,
+        libraryRootUriString: String,
+        displayName: String,
+        coverFilePath: String?,
+        updatedAt: Long
+    )
 }

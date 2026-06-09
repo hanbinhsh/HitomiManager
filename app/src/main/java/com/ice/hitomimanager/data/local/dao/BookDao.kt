@@ -141,4 +141,51 @@ interface BookDao {
     fun observeUnqueuedUnmatchedBooks(
         libraryRootUriString: String
     ): Flow<List<BookEntity>>
+
+    @Query(
+        """
+    SELECT *
+    FROM book
+    WHERE displayName = :displayName
+      AND fileSize = :fileSize
+      AND uriString != :uriString
+    ORDER BY 
+      CASE 
+        WHEN sourceGalleryId IS NULL OR sourceGalleryId = '' THEN 1 
+        ELSE 0 
+      END,
+      updatedAt DESC
+    LIMIT 1
+    """
+    )
+    suspend fun findReusableMovedBook(
+        displayName: String,
+        fileSize: Long,
+        uriString: String
+    ): BookEntity?
+
+    @Query(
+        """
+    UPDATE book
+    SET 
+        uriString = :newUriString,
+        libraryRootUriString = :libraryRootUriString,
+        displayName = :displayName,
+        fileSize = :fileSize,
+        lastModified = :lastModified,
+        coverFilePath = COALESCE(:coverFilePath, coverFilePath),
+        updatedAt = :updatedAt
+    WHERE uriString = :oldUriString
+    """
+    )
+    suspend fun migrateBookUri(
+        oldUriString: String,
+        newUriString: String,
+        libraryRootUriString: String,
+        displayName: String,
+        fileSize: Long,
+        lastModified: Long,
+        coverFilePath: String?,
+        updatedAt: Long
+    )
 }

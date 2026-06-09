@@ -35,6 +35,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ice.hitomimanager.SettingsUiState
 import com.ice.hitomimanager.data.model.SettingsTab
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.Alignment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,6 +59,7 @@ fun SettingsScreen(
     onClearDatabase: () -> Unit,
     onOpenTasks: () -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onLibraryGridColumnsChange: (Int) -> Unit,
 ) {
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -160,7 +164,8 @@ fun SettingsScreen(
                     DisplaySettingsContent(
                         state = state,
                         onShowTagNamespacePrefixChange = onShowTagNamespacePrefixChange,
-                        onShowRematchButtonInLibraryChange = onShowRematchButtonInLibraryChange
+                        onShowRematchButtonInLibraryChange = onShowRematchButtonInLibraryChange,
+                        onLibraryGridColumnsChange = onLibraryGridColumnsChange
                     )
                 }
 
@@ -254,7 +259,8 @@ private fun GeneralSettingsContent(
 private fun DisplaySettingsContent(
     state: SettingsUiState,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
-    onShowRematchButtonInLibraryChange: (Boolean) -> Unit
+    onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onLibraryGridColumnsChange: (Int) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -296,6 +302,41 @@ private fun DisplaySettingsContent(
                     checked = state.showRematchButtonInLibrary,
                     onCheckedChange = onShowRematchButtonInLibraryChange
                 )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("网格布局列数")
+            },
+            supportingContent = {
+                Text("当前：${state.libraryGridColumns} 列")
+            },
+            trailingContent = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            onLibraryGridColumnsChange(state.libraryGridColumns - 1)
+                        },
+                        enabled = state.libraryGridColumns > 2
+                    ) {
+                        Text("-")
+                    }
+
+                    Text("${state.libraryGridColumns}")
+
+                    Button(
+                        onClick = {
+                            onLibraryGridColumnsChange(state.libraryGridColumns + 1)
+                        },
+                        enabled = state.libraryGridColumns < 6
+                    ) {
+                        Text("+")
+                    }
+                }
             }
         )
     }
