@@ -19,6 +19,7 @@ import com.ice.hitomimanager.data.model.MatchTaskStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.room.withTransaction
+import com.ice.hitomimanager.domain.scanner.ScanProgress
 
 class LibraryRepository(
     private val context: Context
@@ -175,10 +176,16 @@ class LibraryRepository(
         return tagDao.observeTagsForBook(uriString)
     }
 
-    suspend fun scanAndSync(treeUri: Uri) {
+    suspend fun scanAndSync(
+        treeUri: Uri,
+        onProgress: (ScanProgress) -> Unit = {}
+    ) {
         val now = System.currentTimeMillis()
         val rootUriString = treeUri.toString()
-        val scannedBooks = scanner.scan(treeUri)
+        val scannedBooks = scanner.scan(
+            treeUri = treeUri,
+            onProgress = onProgress
+        )
 
         for (scanned in scannedBooks) {
             db.withTransaction {

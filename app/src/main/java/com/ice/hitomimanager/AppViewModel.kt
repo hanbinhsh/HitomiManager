@@ -11,7 +11,6 @@ import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import com.ice.hitomimanager.data.model.BookItem
 import com.ice.hitomimanager.data.model.PageInfo
 import com.ice.hitomimanager.domain.reader.ComicArchiveReader
-import com.ice.hitomimanager.domain.scanner.DocumentTreeScanner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +30,7 @@ import com.ice.hitomimanager.data.model.SettingsTab
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
+import com.ice.hitomimanager.data.model.TagFilterTab
 
 data class LibraryUiState(
     val folderUriString: String? = null,
@@ -51,7 +51,12 @@ data class LibraryUiState(
     val isBatchMatching: Boolean = false,
 
     val isScanning: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val tagFilterTab: TagFilterTab = TagFilterTab.Tag,
+
+    val scanDone: Int = 0,
+    val scanTotal: Int = 0,
+    val scanCurrentName: String? = null,
 )
 
 data class MatchTaskDetailUiState(
@@ -242,6 +247,12 @@ class AppViewModel(
                     }
                 }
             }
+        }
+    }
+
+    fun setTagFilterTab(tab: TagFilterTab) {
+        _libraryState.update {
+            it.copy(tagFilterTab = tab)
         }
     }
 
@@ -1569,28 +1580,48 @@ class AppViewModel(
     }
 
     private fun scanFolder(uri: Uri) {
-        _libraryState.update {
-            it.copy(
-                isScanning = true,
-                error = null
-            )
-        }
-
         viewModelScope.launch {
+            _libraryState.update {
+                it.copy(
+                    isScanning = true,
+                    scanDone = 0,
+                    scanTotal = 0,
+                    scanCurrentName = null,
+                    error = null
+                )
+            }
+
             try {
-                libraryRepository.scanAndSync(uri)
+                libraryRepository.scanAndSync(
+                    treeUri = uri,
+                    onProgress = { progress ->
+                        _libraryState.update {
+                            it.copy(
+                                scanDone = progress.done,
+                                scanTotal = progress.total,
+                                scanCurrentName = progress.currentName
+                            )
+                        }
+                    }
+                )
 
                 _libraryState.update {
                     it.copy(
                         isScanning = false,
-                        error = null
+                        scanCurrentName = null
                     )
                 }
+
+                refreshLibraryBooks()
+                observeTagItems()
+                observeMatchTasks()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(
                         isScanning = false,
-                        error = e.message ?: "扫描失败"
+                        scanDone = 0,
+                        scanTotal = 0,
+                        scanCurrentName = null
                     )
                 }
             }

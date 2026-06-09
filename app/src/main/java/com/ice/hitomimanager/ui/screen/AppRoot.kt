@@ -86,6 +86,7 @@ fun AppRoot(
                 libraryLayoutMode = settingsState.libraryLayoutMode,
                 libraryGridColumns = settingsState.libraryGridColumns,
                 onToggleLibraryLayoutMode = viewModel::toggleLibraryLayoutMode,
+                onTagFilterTabChange = viewModel::setTagFilterTab,
                 onOpenMatchTask = { task ->
                     if (task.status == MatchTaskStatus.Failed) {
                         viewModel.startMatchFromTask(task)

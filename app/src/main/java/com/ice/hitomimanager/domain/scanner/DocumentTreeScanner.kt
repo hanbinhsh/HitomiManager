@@ -14,7 +14,10 @@ class DocumentTreeScanner(
     private val archiveExtensions = setOf("zip", "cbz")
     private val coverCache = CoverCache(context)
 
-    suspend fun scan(treeUri: Uri): List<ScannedBook> = withContext(Dispatchers.IO) {
+    suspend fun scan(
+        treeUri: Uri,
+        onProgress: (ScanProgress) -> Unit = {}
+    ): List<ScannedBook> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: return@withContext emptyList()
 
@@ -39,45 +42,81 @@ class DocumentTreeScanner(
             }
         }
 
+        // 1. 先递归找出所有压缩包
         walk(root)
 
-        archiveFiles
-            .sortedWith { a, b ->
-                naturalCompare(a.name.orEmpty(), b.name.orEmpty())
-            }
-            .map { file ->
-                val name = file.name.orEmpty()
+        // 2. 排序后再统计总数
+        val sortedArchiveFiles = archiveFiles.sortedWith { a, b ->
+            naturalCompare(a.name.orEmpty(), b.name.orEmpty())
+        }
 
-                val cachedCoverPath = coverCache.getValidCover(file)
+        val total = sortedArchiveFiles.size
 
-                val coverPath = if (cachedCoverPath != null) {
-                    cachedCoverPath
-                } else {
-                    val generatedCover = runCatching {
-                        ComicArchiveReader.extractCoverToCache(
-                            context = context,
-                            archiveUri = file.uri
-                        )
-                    }.getOrNull()
+        // 3. 通知 UI：已经知道总数了，但还没开始处理
+        onProgress(
+            ScanProgress(
+                done = 0,
+                total = total,
+                currentName = null
+            )
+        )
 
-                    if (generatedCover != null) {
-                        coverCache.saveCover(
-                            file = file,
-                            coverPath = generatedCover.absolutePath
-                        )
-                    }
+        val result = mutableListOf<ScannedBook>()
 
-                    generatedCover?.absolutePath
+        // 4. 逐个处理文件，并在生成封面前后更新进度
+        sortedArchiveFiles.forEachIndexed { index, file ->
+            val name = file.name.orEmpty()
+
+            // 开始处理当前文件
+            onProgress(
+                ScanProgress(
+                    done = index,
+                    total = total,
+                    currentName = name
+                )
+            )
+
+            val cachedCoverPath = coverCache.getValidCover(file)
+
+            val coverPath = if (cachedCoverPath != null) {
+                cachedCoverPath
+            } else {
+                val generatedCover = runCatching {
+                    ComicArchiveReader.extractCoverToCache(
+                        context = context,
+                        archiveUri = file.uri
+                    )
+                }.getOrNull()
+
+                if (generatedCover != null) {
+                    coverCache.saveCover(
+                        file = file,
+                        coverPath = generatedCover.absolutePath
+                    )
                 }
 
-                ScannedBook(
-                    displayName = name,
-                    uriString = file.uri.toString(),
-                    fileSize = file.length(),
-                    lastModified = file.lastModified(),
-                    coverFilePath = coverPath
-                )
+                generatedCover?.absolutePath
             }
+
+            result += ScannedBook(
+                displayName = name,
+                uriString = file.uri.toString(),
+                fileSize = file.length(),
+                lastModified = file.lastModified(),
+                coverFilePath = coverPath
+            )
+
+            // 当前文件处理完成
+            onProgress(
+                ScanProgress(
+                    done = index + 1,
+                    total = total,
+                    currentName = name
+                )
+            )
+        }
+
+        result
     }
 
     private fun naturalCompare(a: String, b: String): Int {

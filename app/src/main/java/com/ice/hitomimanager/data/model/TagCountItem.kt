@@ -19,3 +19,11 @@ enum class HomeTab {
     Search,
     Tasks
 }
+
+enum class TagFilterTab {
+    Tag,
+    Artist,
+    Group,
+    Series,
+    Character
+}

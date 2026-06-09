@@ -66,13 +66,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TabRow
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
+import com.ice.hitomimanager.data.model.TagFilterTab
+import androidx.compose.material3.Tab
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,6 +104,7 @@ fun LibraryScreen(
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
     onToggleLibraryLayoutMode: () -> Unit,
+    onTagFilterTabChange: (TagFilterTab) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -188,7 +195,8 @@ fun LibraryScreen(
                     showTagNamespacePrefix = showTagNamespacePrefix,
                     onToggleTag = onToggleTag,
                     onClearTagFilters = onClearTagFilters,
-                    onTagSortModeChange = onTagSortModeChange
+                    onTagSortModeChange = onTagSortModeChange,
+                    onTagFilterTabChange = onTagFilterTabChange
                 )
             }
 
@@ -280,18 +288,11 @@ private fun LibraryContent(
         }
 
         if (state.isScanning) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                CircularProgressIndicator()
-                Text(
-                    text = "正在扫描压缩包并生成封面...",
-                    modifier = Modifier.padding(top = 12.dp)
-                )
-            }
+            ScanProgressCard(
+                done = state.scanDone,
+                total = state.scanTotal,
+                currentName = state.scanCurrentName
+            )
         }
 
         if (state.error != null) {
@@ -377,124 +378,192 @@ private fun TagFilterContent(
     showTagNamespacePrefix: Boolean,
     onToggleTag: (TagCountItem) -> Unit,
     onClearTagFilters: () -> Unit,
-    onTagSortModeChange: (TagSortMode) -> Unit
+    onTagSortModeChange: (TagSortMode) -> Unit,
+    onTagFilterTabChange: (TagFilterTab) -> Unit
 ) {
-    val grouped = state.tagItems.groupBy { it.namespace }
-
-    LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    val visibleTags = remember(
+        state.tagItems,
+        state.tagFilterTab
     ) {
-        item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = state.tagSortMode == TagSortMode.CountDesc,
+        state.tagItems.filter { tag ->
+            tagBelongsToFilterTab(
+                namespace = tag.namespace,
+                tab = state.tagFilterTab
+            )
+        }
+    }
+
+    var visibleLimit by remember(
+        state.tagFilterTab,
+        state.tagSortMode,
+        showTagNamespacePrefix
+    ) {
+        mutableStateOf(TagPageSize)
+    }
+
+    val shownTags = remember(
+        visibleTags,
+        visibleLimit
+    ) {
+        visibleTags.take(visibleLimit)
+    }
+
+    Column(
+        modifier = modifier
+    ) {
+        TabRow(
+            selectedTabIndex = state.tagFilterTab.ordinal
+        ) {
+            TagFilterTab.values().forEach { tab ->
+                Tab(
+                    selected = state.tagFilterTab == tab,
                     onClick = {
-                        onTagSortModeChange(TagSortMode.CountDesc)
+                        onTagFilterTabChange(tab)
                     },
-                    label = {
-                        Text("按出现次数")
+                    text = {
+                        Text(tagFilterTabLabel(tab))
                     }
                 )
+            }
+        }
 
-                FilterChip(
-                    selected = state.tagSortMode == TagSortMode.NameAsc,
-                    onClick = {
-                        onTagSortModeChange(TagSortMode.NameAsc)
-                    },
-                    label = {
-                        Text("按首字母")
-                    }
-                )
-
-                TextButton(
-                    onClick = onClearTagFilters,
-                    enabled = state.selectedTagKeys.isNotEmpty()
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 12.dp,
+                end = 16.dp,
+                bottom = 24.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("清除选择")
+                    CompactSortChip(
+                        selected = state.tagSortMode == TagSortMode.CountDesc,
+                        text = "出现次数",
+                        onClick = {
+                            onTagSortModeChange(TagSortMode.CountDesc)
+                        }
+                    )
+
+                    CompactSortChip(
+                        selected = state.tagSortMode == TagSortMode.NameAsc,
+                        text = "首字母",
+                        onClick = {
+                            onTagSortModeChange(TagSortMode.NameAsc)
+                        }
+                    )
+
+                    TextButton(
+                        onClick = onClearTagFilters,
+                        enabled = state.selectedTagKeys.isNotEmpty()
+                    ) {
+                        Text("清除")
+                    }
                 }
             }
-        }
 
-        val namespaceOrder = listOf(
-            "tag",
-            "artist",
-            "group",
-            "series",
-            "character",
-            "female",
-            "male"
-        )
-
-        namespaceOrder.forEach { namespace ->
-            val tags = grouped[namespace].orEmpty()
-            if (tags.isNotEmpty()) {
+            if (state.selectedTagKeys.isNotEmpty()) {
                 item {
-                    TagGroup(
-                        title = namespaceTitle(namespace),
-                        tags = tags,
-                        selectedKeys = state.selectedTagKeys,
-                        showTagNamespacePrefix = showTagNamespacePrefix,
-                        onToggleTag = onToggleTag
+                    ActiveFilterBanner(
+                        text = "已选择 ${state.selectedTagKeys.size} 个筛选条件",
+                        onClear = onClearTagFilters
                     )
                 }
             }
-        }
 
-        val otherNamespaces = grouped.keys
-            .filter { it !in namespaceOrder }
-            .sorted()
+            item {
+                Text(
+                    text = "${tagFilterTabLabel(state.tagFilterTab)}（${visibleTags.size}）",
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
 
-        otherNamespaces.forEach { namespace ->
-            val tags = grouped[namespace].orEmpty()
-            if (tags.isNotEmpty()) {
+            if (visibleTags.isEmpty()) {
                 item {
-                    TagGroup(
-                        title = namespaceTitle(namespace),
-                        tags = tags,
-                        selectedKeys = state.selectedTagKeys,
-                        showTagNamespacePrefix = showTagNamespacePrefix,
-                        onToggleTag = onToggleTag
-                    )
+                    EmptyHint("暂无可筛选标签。")
+                }
+            } else {
+                item {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(CompactTagHorizontalGap),
+                        verticalArrangement = Arrangement.spacedBy(CompactTagVerticalGap)
+                    ) {
+                        shownTags.forEach { tag ->
+                            CompactFilterTagChip(
+                                tag = tag,
+                                selected = tag.tagKey in state.selectedTagKeys,
+                                showTagNamespacePrefix = showTagNamespacePrefix,
+                                onToggleTag = onToggleTag
+                            )
+                        }
+                    }
+                }
+
+                if (shownTags.size < visibleTags.size) {
+                    item {
+                        AutoLoadMoreTagsItem(
+                            shownCount = shownTags.size,
+                            totalCount = visibleTags.size,
+                            onLoadMore = {
+                                visibleLimit = (visibleLimit + TagPageSize)
+                                    .coerceAtMost(visibleTags.size)
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TagGroup(
-    title: String,
-    tags: List<TagCountItem>,
+private fun FlowLikeTagRow(
+    row: List<TagCountItem>,
     selectedKeys: Set<String>,
     showTagNamespacePrefix: Boolean,
     onToggleTag: (TagCountItem) -> Unit
 ) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(CompactTagGroupGap)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(CompactTagHorizontalGap),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CompactTagHorizontalGap),
-            verticalArrangement = Arrangement.spacedBy(CompactTagVerticalGap)
-        ) {
-            tags.forEach { tag ->
-                CompactFilterTagChip(
-                    tag = tag,
-                    selected = tag.tagKey in selectedKeys,
-                    showTagNamespacePrefix = showTagNamespacePrefix,
-                    onToggleTag = onToggleTag
-                )
-            }
+        row.forEach { tag ->
+            CompactFilterTagChip(
+                tag = tag,
+                selected = tag.tagKey in selectedKeys,
+                showTagNamespacePrefix = showTagNamespacePrefix,
+                onToggleTag = onToggleTag
+            )
         }
+    }
+}
+
+@Composable
+private fun CompactSortChip(
+    selected: Boolean,
+    text: String,
+    onClick: () -> Unit
+) {
+    CompositionLocalProvider(
+        LocalMinimumInteractiveComponentSize provides 0.dp
+    ) {
+        FilterChip(
+            selected = selected,
+            onClick = onClick,
+            label = {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            },
+            modifier = Modifier.height(28.dp)
+        )
     }
 }
 
@@ -668,6 +737,37 @@ private fun namespaceTitle(namespace: String): String {
         "female" -> "女性标签"
         "male" -> "男性标签"
         else -> namespace
+    }
+}
+
+private fun tagFilterTabLabel(
+    tab: TagFilterTab
+): String {
+    return when (tab) {
+        TagFilterTab.Tag -> "Tag"
+        TagFilterTab.Artist -> "作者"
+        TagFilterTab.Group -> "社团"
+        TagFilterTab.Series -> "系列"
+        TagFilterTab.Character -> "角色"
+    }
+}
+
+private fun tagBelongsToFilterTab(
+    namespace: String,
+    tab: TagFilterTab
+): Boolean {
+    return when (tab) {
+        TagFilterTab.Artist -> namespace == "artist"
+        TagFilterTab.Group -> namespace == "group"
+        TagFilterTab.Series -> namespace == "series"
+        TagFilterTab.Character -> namespace == "character"
+
+        TagFilterTab.Tag -> namespace !in setOf(
+            "artist",
+            "group",
+            "series",
+            "character"
+        )
     }
 }
 
@@ -1252,6 +1352,24 @@ private fun CompactFilterTagChip(
     }
 }
 
+private fun estimateTagChipWidthDp(
+    label: String
+): Float {
+    var width = 36f
+
+    label.forEach { ch ->
+        width += when {
+            ch.code < 128 -> 7f
+            else -> 13f
+        }
+    }
+
+    return width.coerceIn(
+        minimumValue = 56f,
+        maximumValue = 240f
+    )
+}
+
 @Composable
 private fun BookShelfContent(
     books: List<BookItem>,
@@ -1350,7 +1468,79 @@ private fun GridBookCoverItem(
     }
 }
 
+@Composable
+private fun AutoLoadMoreTagsItem(
+    shownCount: Int,
+    totalCount: Int,
+    onLoadMore: () -> Unit
+) {
+    LaunchedEffect(shownCount, totalCount) {
+        onLoadMore()
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "正在加载更多…（$shownCount/$totalCount）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun ScanProgressCard(
+    done: Int,
+    total: Int,
+    currentName: String?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = if (total > 0) {
+                "正在扫描并生成封面：$done / $total"
+            } else {
+                "正在扫描压缩包..."
+            },
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        if (total > 0) {
+            LinearProgressIndicator(
+                progress = {
+                    done.toFloat() / total.toFloat()
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        if (!currentName.isNullOrBlank()) {
+            Text(
+                text = currentName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 private val CompactTagChipHeight = 28.dp
 private val CompactTagHorizontalGap = 6.dp
 private val CompactTagVerticalGap = 3.dp
 private val CompactTagGroupGap = 6.dp
+private const val TagPageSize = 120
