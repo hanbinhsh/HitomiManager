@@ -1628,6 +1628,35 @@ class AppViewModel(
         }
     }
 
+    fun openReaderFromMatchTask(
+        task: MatchTaskEntity,
+        onOpened: () -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val book = libraryRepository.getBookByUriString(task.bookUriString)
+
+                if (book == null) {
+                    _matchTaskDetailState.update {
+                        it.copy(
+                            error = "找不到该任务对应的本地文件，可能文件已移动或数据库记录已失效"
+                        )
+                    }
+                    return@launch
+                }
+
+                openBook(book)
+                onOpened()
+            } catch (e: Exception) {
+                _matchTaskDetailState.update {
+                    it.copy(
+                        error = e.message ?: "打开阅读器失败"
+                    )
+                }
+            }
+        }
+    }
+
     private fun ensurePageLoaded(index: Int) {
         val state = _readerState.value
         val book = state.book ?: return

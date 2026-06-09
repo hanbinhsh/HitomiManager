@@ -154,6 +154,13 @@ fun AppRoot(
                 onQueryChange = viewModel::updateMatchQuery,
                 onSearch = viewModel::searchMatch,
                 onIdMatch = viewModel::matchById,
+                onRead = {
+                    val book = matchState.book
+                    if (book != null) {
+                        viewModel.openBook(book)
+                        navController.navigate(Routes.Reader)
+                    }
+                },
                 onBind = { meta ->
                     viewModel.bindMatch(meta)
                     navController.popBackStack()
@@ -207,6 +214,14 @@ fun AppRoot(
                     if (task != null) {
                         viewModel.startMatchFromTask(task)
                         navController.navigate(Routes.Match)
+                    }
+                },
+                onReadTask = {
+                    val task = matchTaskDetailState.task
+                    if (task != null) {
+                        viewModel.openReaderFromMatchTask(task) {
+                            navController.navigate(Routes.Reader)
+                        }
                     }
                 },
                 onMarkSkipped = viewModel::markCurrentMatchTaskSkipped

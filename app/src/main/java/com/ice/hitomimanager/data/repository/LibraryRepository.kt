@@ -176,6 +176,12 @@ class LibraryRepository(
         return tagDao.observeTagsForBook(uriString)
     }
 
+    suspend fun getBookByUriString(
+        uriString: String
+    ): BookItem? {
+        return bookDao.findByUri(uriString)?.toBookItem()
+    }
+
     suspend fun scanAndSync(
         treeUri: Uri,
         onProgress: (ScanProgress) -> Unit = {}

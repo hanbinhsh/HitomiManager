@@ -17,12 +17,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -53,6 +55,7 @@ fun MatchTaskDetailScreen(
     onBack: () -> Unit,
     onBindCandidate: (MatchCandidateEntity) -> Unit,
     onOpenMatchPage: () -> Unit,
+    onReadTask: () -> Unit,
     onMarkSkipped: () -> Unit
 ) {
     Scaffold(
@@ -102,6 +105,7 @@ fun MatchTaskDetailScreen(
                     isBinding = state.isBinding,
                     isRefreshing = state.isRefreshing,
                     onOpenMatchPage = onOpenMatchPage,
+                    onReadTask = onReadTask,
                     onMarkSkipped = onMarkSkipped
                 )
             }
@@ -163,6 +167,7 @@ private fun TaskHeaderCard(
     isBinding: Boolean,
     isRefreshing: Boolean,
     onOpenMatchPage: () -> Unit,
+    onReadTask: () -> Unit,
     onMarkSkipped: () -> Unit
 ) {
     ElevatedCard {
@@ -218,8 +223,19 @@ private fun TaskHeaderCard(
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                FilledTonalIconButton(
+                    onClick = onReadTask,
+                    enabled = !isBinding && !isRefreshing
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "打开阅读器"
+                    )
+                }
+
                 FilledTonalButton(
                     onClick = onOpenMatchPage,
                     enabled = !isBinding && !isRefreshing

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,6 +51,7 @@ fun MatchScreen(
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
     onIdMatch: () -> Unit,
+    onRead: () -> Unit,
     onBind: (HitomiBookMeta) -> Unit
 ) {
     Scaffold(
@@ -79,7 +81,8 @@ fun MatchScreen(
             MatchBookHeader(
                 state = state,
                 onSearch = onSearch,
-                onIdMatch = onIdMatch
+                onIdMatch = onIdMatch,
+                onRead = onRead
             )
 
             OutlinedTextField(
@@ -209,7 +212,8 @@ private fun CandidateItem(
 private fun MatchBookHeader(
     state: MatchUiState,
     onSearch: () -> Unit,
-    onIdMatch: () -> Unit
+    onIdMatch: () -> Unit,
+    onRead: () -> Unit
 ) {
     val book = state.book ?: return
 
@@ -273,6 +277,16 @@ private fun MatchBookHeader(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    FilledTonalIconButton(
+                        onClick = onRead,
+                        enabled = !state.isSearching
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = "打开阅读器"
+                        )
+                    }
+
                     FilledTonalIconButton(
                         onClick = onSearch,
                         enabled = !state.isSearching
