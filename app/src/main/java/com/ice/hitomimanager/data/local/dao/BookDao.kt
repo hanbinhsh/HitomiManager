@@ -27,9 +27,6 @@ interface BookDao {
     @Upsert
     suspend fun upsert(book: BookEntity)
 
-    @Query("DELETE FROM book WHERE uriString NOT IN (:validUris)")
-    suspend fun deleteMissing(validUris: List<String>)
-
     @Query("DELETE FROM book")
     suspend fun clearAll()
 

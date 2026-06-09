@@ -866,7 +866,8 @@ class AppViewModel(
 
             val nextTask = if (_settingsState.value.autoOpenNextReviewTask) {
                 libraryRepository.getNextNeedReviewTask(
-                    currentTaskId = task.id
+                    currentTaskId = task.id,
+                    libraryRootUriString = task.libraryRootUriString
                 )
             } else {
                 null
@@ -966,87 +967,6 @@ class AppViewModel(
 
             setHomeTab(HomeTab.Tasks)
             setMatchTaskFilter(MatchTaskFilter.All)
-        }
-    }
-
-    fun refreshCurrentMatchTaskSearch() {
-        val task = _matchTaskDetailState.value.task ?: return
-
-        if (_matchTaskDetailState.value.isRefreshing) return
-
-        viewModelScope.launch {
-            val query = buildMatchQueryFromName(task.displayName)
-
-            _matchTaskDetailState.update {
-                it.copy(
-                    isRefreshing = true,
-                    error = null
-                )
-            }
-
-            libraryRepository.updateMatchTask(
-                task.copy(
-                    query = query,
-                    status = MatchTaskStatus.Running,
-                    errorMessage = null,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-
-            val candidates = runCatching {
-                hitomiRepository.searchTitle(query)
-            }.getOrElse { e ->
-                libraryRepository.updateMatchTask(
-                    task.copy(
-                        query = query,
-                        status = MatchTaskStatus.Failed,
-                        errorMessage = e.message ?: "重新搜索失败",
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-
-                _matchTaskDetailState.update {
-                    it.copy(
-                        isRefreshing = false,
-                        error = e.message ?: "重新搜索失败"
-                    )
-                }
-                return@launch
-            }
-
-            libraryRepository.replaceCandidatesForTask(
-                taskId = task.id,
-                candidates = candidates,
-                selectedGalleryId = null
-            )
-
-            val newStatus = if (candidates.isEmpty()) {
-                MatchTaskStatus.Failed
-            } else {
-                MatchTaskStatus.NeedReview
-            }
-
-            libraryRepository.updateMatchTask(
-                task.copy(
-                    query = query,
-                    status = newStatus,
-                    matchedGalleryId = null,
-                    candidateCount = candidates.size,
-                    errorMessage = if (candidates.isEmpty()) {
-                        "没有搜索到候选"
-                    } else {
-                        null
-                    },
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-
-            _matchTaskDetailState.update {
-                it.copy(
-                    isRefreshing = false,
-                    error = null
-                )
-            }
         }
     }
 

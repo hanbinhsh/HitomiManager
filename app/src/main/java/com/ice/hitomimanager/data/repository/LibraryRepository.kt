@@ -174,13 +174,6 @@ class LibraryRepository(
         return tagDao.observeTagsForBook(uriString)
     }
 
-    fun observeBooksByTag(tagKey: String): Flow<List<BookItem>> {
-        return bookDao.observeBooksByTag(tagKey)
-            .map { list ->
-                list.map { it.toBookItem() }
-            }
-    }
-
     suspend fun scanAndSync(treeUri: Uri) {
         val now = System.currentTimeMillis()
         val rootUriString = treeUri.toString()
@@ -324,9 +317,13 @@ class LibraryRepository(
     }
 
     suspend fun getNextNeedReviewTask(
-        currentTaskId: Long
+        currentTaskId: Long,
+        libraryRootUriString: String?
     ): MatchTaskEntity? {
+        if (libraryRootUriString == null) return null
+
         return matchTaskDao.getNextTaskByStatus(
+            libraryRootUriString = libraryRootUriString,
             status = MatchTaskStatus.NeedReview,
             currentTaskId = currentTaskId
         )

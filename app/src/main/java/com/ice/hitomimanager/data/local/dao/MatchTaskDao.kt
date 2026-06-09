@@ -98,13 +98,15 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
-    WHERE status = :status
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND status = :status
       AND id != :currentTaskId
     ORDER BY updatedAt DESC
     LIMIT 1
     """
     )
     suspend fun getNextTaskByStatus(
+        libraryRootUriString: String,
         status: String,
         currentTaskId: Long
     ): MatchTaskEntity?
