@@ -16,13 +16,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -74,45 +77,22 @@ fun MatchScreen(
                 .padding(paddingValues)
         ) {
             MatchBookHeader(
-                state = state
+                state = state,
+                onSearch = onSearch,
+                onIdMatch = onIdMatch
             )
 
-            Row(
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = onQueryChange,
+                label = {
+                    Text("搜索标题 / ID")
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = state.query,
-                    onValueChange = onQueryChange,
-                    label = {
-                        Text("搜索标题 / Gallery ID")
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp),
-                    singleLine = true
-                )
-
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(
-                        onClick = onSearch,
-                        enabled = !state.isSearching
-                    ) {
-                        Text("搜索")
-                    }
-
-                    Button(
-                        onClick = onIdMatch,
-                        enabled = !state.isSearching
-                    ) {
-                        Text("ID匹配")
-                    }
-                }
-            }
+                singleLine = true
+            )
 
             if (state.isSearching) {
                 Column(
@@ -227,7 +207,9 @@ private fun CandidateItem(
 
 @Composable
 private fun MatchBookHeader(
-    state: MatchUiState
+    state: MatchUiState,
+    onSearch: () -> Unit,
+    onIdMatch: () -> Unit
 ) {
     val book = state.book ?: return
 
@@ -268,21 +250,47 @@ private fun MatchBookHeader(
             )
         },
         supportingContent = {
-            val localPages = state.localPageCount?.let {
-                "本地页数：${it}p"
-            } ?: "本地页数：读取中"
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val localPages = state.localPageCount?.let {
+                    "本地页数：${it}p"
+                } ?: "本地页数：读取中"
 
-            val matched = if (book.sourceGalleryId != null) {
-                "已匹配 ID：${book.sourceGalleryId}"
-            } else {
-                "未匹配"
+                val matched = if (book.sourceGalleryId != null) {
+                    "已匹配 ID：${book.sourceGalleryId}"
+                } else {
+                    "未匹配"
+                }
+
+                Text(
+                    text = "$localPages · $matched",
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilledTonalIconButton(
+                        onClick = onSearch,
+                        enabled = !state.isSearching
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = "搜索"
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onIdMatch,
+                        enabled = !state.isSearching
+                    ) {
+                        Text("ID 匹配")
+                    }
+                }
             }
-
-            Text(
-                text = "$localPages · $matched",
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     )
 }

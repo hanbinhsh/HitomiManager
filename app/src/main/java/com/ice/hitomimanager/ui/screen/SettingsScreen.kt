@@ -37,7 +37,9 @@ import com.ice.hitomimanager.SettingsUiState
 import com.ice.hitomimanager.data.model.SettingsTab
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.FilterChip
 import androidx.compose.ui.Alignment
+import androidx.compose.material3.Slider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -310,31 +312,19 @@ private fun DisplaySettingsContent(
                 Text("网格布局列数")
             },
             supportingContent = {
-                Text("当前：${state.libraryGridColumns} 列")
-            },
-            trailingContent = {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Button(
-                        onClick = {
-                            onLibraryGridColumnsChange(state.libraryGridColumns - 1)
-                        },
-                        enabled = state.libraryGridColumns > 2
-                    ) {
-                        Text("-")
-                    }
-
-                    Text("${state.libraryGridColumns}")
-
-                    Button(
-                        onClick = {
-                            onLibraryGridColumnsChange(state.libraryGridColumns + 1)
-                        },
-                        enabled = state.libraryGridColumns < 6
-                    ) {
-                        Text("+")
+                    listOf(2, 3, 4, 5, 6).forEach { columns ->
+                        FilterChip(
+                            selected = state.libraryGridColumns == columns,
+                            onClick = {
+                                onLibraryGridColumnsChange(columns)
+                            },
+                            label = {
+                                Text("${columns}")
+                            }
+                        )
                     }
                 }
             }
