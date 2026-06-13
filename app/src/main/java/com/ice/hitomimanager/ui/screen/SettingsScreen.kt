@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -18,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -31,6 +33,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ice.hitomimanager.SettingsUiState
@@ -40,6 +44,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.FilterChip
 import androidx.compose.ui.Alignment
 import androidx.compose.material3.Slider
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,15 +66,38 @@ fun SettingsScreen(
     onAutoOpenNextReviewTaskChange: (Boolean) -> Unit,
     onStartBatchMatch: () -> Unit,
     onClearDatabase: () -> Unit,
+    onExportDatabasePicked: (Uri) -> Unit,
+    onImportDatabasePicked: (Uri) -> Unit,
     onOpenTasks: () -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit,
+    onFilteredMatchLanguagesChange: (String) -> Unit,
+    onMatchSearchTimeoutSecondsChange: (String) -> Unit,
+    onBatchMatchThreadsChange: (String) -> Unit,
 ) {
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
         onResult = { uri ->
             if (uri != null) {
                 onFolderPicked(uri)
+            }
+        }
+    )
+
+    val databaseExporter = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+        onResult = { uri ->
+            if (uri != null) {
+                onExportDatabasePicked(uri)
+            }
+        }
+    )
+
+    val databaseImporter = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            if (uri != null) {
+                onImportDatabasePicked(uri)
             }
         }
     )
@@ -156,6 +186,22 @@ fun SettingsScreen(
                         onPickFolder = {
                             folderPicker.launch(null)
                         },
+                        onExportDatabaseClick = {
+                            val timestamp = SimpleDateFormat(
+                                "yyyyMMdd_HHmmss",
+                                Locale.US
+                            ).format(Date())
+                            databaseExporter.launch("hitomi_manager_${timestamp}.db")
+                        },
+                        onImportDatabaseClick = {
+                            databaseImporter.launch(
+                                arrayOf(
+                                    "application/octet-stream",
+                                    "application/vnd.sqlite3",
+                                    "*/*"
+                                )
+                            )
+                        },
                         onClearDatabaseClick = {
                             showClearDatabaseDialog = true
                         }
@@ -182,6 +228,9 @@ fun SettingsScreen(
                         onAutoMatchSingleResultChange = onAutoMatchSingleResultChange,
                         onAutoMatchSamePageFirstChange = onAutoMatchSamePageFirstChange,
                         onAutoOpenNextReviewTaskChange = onAutoOpenNextReviewTaskChange,
+                        onFilteredMatchLanguagesChange = onFilteredMatchLanguagesChange,
+                        onMatchSearchTimeoutSecondsChange = onMatchSearchTimeoutSecondsChange,
+                        onBatchMatchThreadsChange = onBatchMatchThreadsChange,
                         onStartBatchMatch = onStartBatchMatch,
                         onOpenTasks = onOpenTasks
                     )
@@ -195,6 +244,8 @@ fun SettingsScreen(
 private fun GeneralSettingsContent(
     state: SettingsUiState,
     onPickFolder: () -> Unit,
+    onExportDatabaseClick: () -> Unit,
+    onImportDatabaseClick: () -> Unit,
     onClearDatabaseClick: () -> Unit
 ) {
     Column(
@@ -229,6 +280,44 @@ private fun GeneralSettingsContent(
                     onClick = onPickFolder
                 ) {
                     Text(if (state.folderUriString == null) "选择" else "更换")
+                }
+            }
+        )
+
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+
+        SectionTitle("数据库")
+
+        ListItem(
+            headlineContent = {
+                Text("导出数据库")
+            },
+            supportingContent = {
+                Text("将当前 Room SQLite 数据库保存为 .db 文件。")
+            },
+            trailingContent = {
+                Button(
+                    onClick = onExportDatabaseClick
+                ) {
+                    Text("导出")
+                }
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("导入数据库")
+            },
+            supportingContent = {
+                Text("从 .db 文件恢复数据库，会替换当前所有数据库内容。")
+            },
+            trailingContent = {
+                Button(
+                    onClick = onImportDatabaseClick
+                ) {
+                    Text("导入")
                 }
             }
         )
@@ -343,6 +432,9 @@ private fun MatchSettingsContent(
     onAutoMatchSingleResultChange: (Boolean) -> Unit,
     onAutoMatchSamePageFirstChange: (Boolean) -> Unit,
     onAutoOpenNextReviewTaskChange: (Boolean) -> Unit,
+    onFilteredMatchLanguagesChange: (String) -> Unit,
+    onMatchSearchTimeoutSecondsChange: (String) -> Unit,
+    onBatchMatchThreadsChange: (String) -> Unit,
     onStartBatchMatch: () -> Unit,
     onOpenTasks: () -> Unit
 ) {
@@ -460,6 +552,72 @@ private fun MatchSettingsContent(
                 Switch(
                     checked = state.autoOpenNextReviewTask,
                     onCheckedChange = onAutoOpenNextReviewTaskChange
+                )
+            }
+        )
+
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+
+        SectionTitle("候选过滤")
+
+        ListItem(
+            headlineContent = {
+                Text("批量匹配线程数")
+            },
+            supportingContent = {
+                OutlinedTextField(
+                    value = state.batchMatchThreadsText,
+                    onValueChange = onBatchMatchThreadsChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    supportingText = {
+                        Text("范围 1-6；当前生效 ${state.batchMatchThreads} 个。")
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number
+                    )
+                )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("匹配搜索超时")
+            },
+            supportingContent = {
+                OutlinedTextField(
+                    value = state.matchSearchTimeoutSecondsText,
+                    onValueChange = onMatchSearchTimeoutSecondsChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    suffix = {
+                        Text("秒")
+                    },
+                    supportingText = {
+                        Text("范围 10-360 秒；当前生效 ${state.matchSearchTimeoutSeconds} 秒。")
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number
+                    )
+                )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("过滤候选语言")
+            },
+            supportingContent = {
+                OutlinedTextField(
+                    value = state.filteredMatchLanguagesText,
+                    onValueChange = onFilteredMatchLanguagesChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = {
+                        Text("spanish, korean")
+                    }
                 )
             }
         )

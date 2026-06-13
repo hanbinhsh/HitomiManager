@@ -13,10 +13,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -30,6 +34,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -51,6 +56,8 @@ fun MatchScreen(
     onQueryChange: (String) -> Unit,
     onSearch: () -> Unit,
     onIdMatch: () -> Unit,
+    onOpenSearchWebView: () -> Unit,
+    onToggleSearchDiagnosticRaw: () -> Unit,
     onRead: () -> Unit,
     onBind: (HitomiBookMeta) -> Unit
 ) {
@@ -82,6 +89,7 @@ fun MatchScreen(
                 state = state,
                 onSearch = onSearch,
                 onIdMatch = onIdMatch,
+                onOpenSearchWebView = onOpenSearchWebView,
                 onRead = onRead
             )
 
@@ -118,6 +126,15 @@ fun MatchScreen(
                     text = state.error,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+
+            if (state.searchDiagnosticSummary != null) {
+                SearchDiagnostic(
+                    summary = state.searchDiagnosticSummary,
+                    raw = state.searchDiagnosticRaw,
+                    showRaw = state.showSearchDiagnosticRaw,
+                    onToggleRaw = onToggleSearchDiagnosticRaw
                 )
             }
 
@@ -213,6 +230,7 @@ private fun MatchBookHeader(
     state: MatchUiState,
     onSearch: () -> Unit,
     onIdMatch: () -> Unit,
+    onOpenSearchWebView: () -> Unit,
     onRead: () -> Unit
 ) {
     val book = state.book ?: return
@@ -303,8 +321,63 @@ private fun MatchBookHeader(
                     ) {
                         Text("ID 匹配")
                     }
+
+                    OutlinedButton(
+                        onClick = onOpenSearchWebView,
+                        enabled = !state.isSearching && state.query.isNotBlank()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Public,
+                            contentDescription = "打开 WebView"
+                        )
+                    }
                 }
             }
         }
     )
+}
+
+@Composable
+private fun SearchDiagnostic(
+    summary: String,
+    raw: String?,
+    showRaw: Boolean,
+    onToggleRaw: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = summary,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        if (!raw.isNullOrBlank()) {
+            TextButton(
+                onClick = onToggleRaw
+            ) {
+                Text(if (showRaw) "收起详情" else "展开详情")
+            }
+
+            if (showRaw) {
+                SelectionContainer {
+                    Text(
+                        text = raw,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
 }

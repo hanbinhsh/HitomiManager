@@ -23,7 +23,10 @@ import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.repository.HitomiMetadataRepository
 import com.ice.hitomimanager.data.local.entity.TagEntity
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import com.ice.hitomimanager.data.model.HomeTab
+import com.ice.hitomimanager.data.model.HitomiSearchMetaResult
 import com.ice.hitomimanager.data.model.MatchTaskFilter
 import com.ice.hitomimanager.data.model.MatchTaskStatus
 import com.ice.hitomimanager.data.model.SettingsTab
@@ -31,12 +34,14 @@ import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.TagFilterTab
+import java.util.Locale
 
 data class LibraryUiState(
     val folderUriString: String? = null,
     val books: List<BookItem> = emptyList(),
 
     val homeTab: HomeTab = HomeTab.Library,
+    val homeTabReselectTick: Long = 0L,
 
     val selectedTagKeys: Set<String> = emptySet(),
     val tagItems: List<TagCountItem> = emptyList(),
@@ -47,6 +52,7 @@ data class LibraryUiState(
     val taskFilter: MatchTaskFilter = MatchTaskFilter.All,
     val matchTasks: List<MatchTaskEntity> = emptyList(),
     val unqueuedUnmatchedBooks: List<BookItem> = emptyList(),
+    val matchTaskFilterCounts: Map<MatchTaskFilter, Int> = emptyMap(),
 
     val isBatchMatching: Boolean = false,
 
@@ -93,6 +99,12 @@ data class SettingsUiState(
     val showRematchButtonInLibrary: Boolean = true,
     val libraryLayoutMode: LibraryLayoutMode = LibraryLayoutMode.List,
     val libraryGridColumns: Int = 3,
+    val filteredMatchLanguagesText: String = "",
+    val filteredMatchLanguages: Set<String> = emptySet(),
+    val matchSearchTimeoutSecondsText: String = "30",
+    val matchSearchTimeoutSeconds: Int = 30,
+    val batchMatchThreadsText: String = "1",
+    val batchMatchThreads: Int = 1,
 )
 
 data class ReaderUiState(
@@ -118,7 +130,15 @@ data class MatchUiState(
     val localPageCount: Int? = null,
     val candidates: List<HitomiBookMeta> = emptyList(),
     val isSearching: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val searchDiagnosticSummary: String? = null,
+    val searchDiagnosticRaw: String? = null,
+    val showSearchDiagnosticRaw: Boolean = false
+)
+
+data class HitomiWebViewUiState(
+    val title: String = "搜索结果",
+    val url: String = ""
 )
 
 class AppViewModel(
@@ -137,8 +157,15 @@ class AppViewModel(
     private var tagObserveJob: Job? = null
 
     private var taskObserveJob: Job? = null
+    private var taskCountObserveJob: Job? = null
+    private val coverRepairingBookUris = mutableSetOf<String>()
+    private val coverRepairAttemptedBookUris = mutableSetOf<String>()
 
     val matchState: StateFlow<MatchUiState> = _matchState.asStateFlow()
+
+    private val _hitomiWebViewState = MutableStateFlow(HitomiWebViewUiState())
+    val hitomiWebViewState: StateFlow<HitomiWebViewUiState> =
+        _hitomiWebViewState.asStateFlow()
 
     private val prefs = app.getSharedPreferences(
         "hitomi_manager_prefs",
@@ -176,6 +203,38 @@ class AppViewModel(
             autoMatchSamePageFirst = prefs.getBoolean(KEY_AUTO_MATCH_SAME_PAGE_FIRST, true),
             autoOpenNextReviewTask = prefs.getBoolean(KEY_AUTO_OPEN_NEXT_REVIEW_TASK, true),
             showRematchButtonInLibrary = prefs.getBoolean(KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY, true),
+            filteredMatchLanguagesText = prefs.getString(KEY_FILTERED_MATCH_LANGUAGES, null).orEmpty(),
+            filteredMatchLanguages = parseFilteredMatchLanguages(
+                prefs.getString(KEY_FILTERED_MATCH_LANGUAGES, null).orEmpty()
+            ),
+            matchSearchTimeoutSeconds = prefs.getInt(
+                KEY_MATCH_SEARCH_TIMEOUT_SECONDS,
+                DEFAULT_MATCH_SEARCH_TIMEOUT_SECONDS
+            ).coerceIn(
+                MIN_MATCH_SEARCH_TIMEOUT_SECONDS,
+                MAX_MATCH_SEARCH_TIMEOUT_SECONDS
+            ),
+            matchSearchTimeoutSecondsText = prefs.getInt(
+                KEY_MATCH_SEARCH_TIMEOUT_SECONDS,
+                DEFAULT_MATCH_SEARCH_TIMEOUT_SECONDS
+            ).coerceIn(
+                MIN_MATCH_SEARCH_TIMEOUT_SECONDS,
+                MAX_MATCH_SEARCH_TIMEOUT_SECONDS
+            ).toString(),
+            batchMatchThreads = prefs.getInt(
+                KEY_BATCH_MATCH_THREADS,
+                DEFAULT_BATCH_MATCH_THREADS
+            ).coerceIn(
+                MIN_BATCH_MATCH_THREADS,
+                MAX_BATCH_MATCH_THREADS
+            ),
+            batchMatchThreadsText = prefs.getInt(
+                KEY_BATCH_MATCH_THREADS,
+                DEFAULT_BATCH_MATCH_THREADS
+            ).coerceIn(
+                MIN_BATCH_MATCH_THREADS,
+                MAX_BATCH_MATCH_THREADS
+            ).toString(),
             libraryLayoutMode = runCatching {
                 LibraryLayoutMode.valueOf(
                     prefs.getString(KEY_LIBRARY_LAYOUT_MODE, LibraryLayoutMode.List.name)
@@ -194,6 +253,7 @@ class AppViewModel(
         observeTagItems()
         refreshLibraryBooks()
         observeMatchTasks()
+        observeMatchTaskFilterCounts()
     }
 
     private fun recoverInterruptedMatchTasks() {
@@ -247,6 +307,40 @@ class AppViewModel(
                     }
                 }
             }
+        }
+    }
+
+    private fun observeMatchTaskFilterCounts() {
+        taskCountObserveJob?.cancel()
+
+        val root = currentLibraryRoot()
+
+        if (root == null) {
+            _libraryState.update {
+                it.copy(matchTaskFilterCounts = emptyMap())
+            }
+            return
+        }
+
+        taskCountObserveJob = viewModelScope.launch {
+            libraryRepository.observeMatchTaskFilterCounts(root)
+                .collectLatest { counts ->
+                    _libraryState.update {
+                        it.copy(matchTaskFilterCounts = counts)
+                    }
+                }
+        }
+    }
+
+    private suspend fun refreshMatchTaskFilterCountsOnce() {
+        val root = currentLibraryRoot() ?: return
+
+        val counts = runCatching {
+            libraryRepository.getMatchTaskFilterCounts(root)
+        }.getOrNull() ?: return
+
+        _libraryState.update {
+            it.copy(matchTaskFilterCounts = counts)
         }
     }
 
@@ -362,13 +456,44 @@ class AppViewModel(
                 _libraryState.update {
                     it.copy(books = books)
                 }
+                repairMissingCovers(books)
             }
         }
     }
 
+    private fun repairMissingCovers(
+        books: List<BookItem>
+    ) {
+        books
+            .filter { book ->
+                val path = book.coverFilePath
+                (path.isNullOrBlank() || !File(path).exists()) &&
+                        book.uriString !in coverRepairAttemptedBookUris
+            }
+            .take(12)
+            .forEach { book ->
+                if (!coverRepairingBookUris.add(book.uriString)) {
+                    return@forEach
+                }
+                coverRepairAttemptedBookUris.add(book.uriString)
+
+                viewModelScope.launch {
+                    try {
+                        libraryRepository.repairMissingCover(book)
+                    } finally {
+                        coverRepairingBookUris.remove(book.uriString)
+                    }
+                }
+            }
+    }
+
     fun setHomeTab(tab: HomeTab) {
-        _libraryState.update {
-            it.copy(homeTab = tab)
+        _libraryState.update { state ->
+            if (state.homeTab == tab) {
+                state.copy(homeTabReselectTick = state.homeTabReselectTick + 1L)
+            } else {
+                state.copy(homeTab = tab)
+            }
         }
     }
 
@@ -444,20 +569,28 @@ class AppViewModel(
                 return@launch
             }
 
-            for (book in unmatchedBooks) {
-                runCatching {
-                    processOneBatchMatchBook(
-                        book = book,
-                        libraryRootUriString = root
-                    )
-                }.onFailure {
-                    // 单个任务失败不终止整个批量匹配
-                }
+            val batchThreads = batchMatchThreads()
+
+            for (chunk in unmatchedBooks.chunked(batchThreads)) {
+                chunk.map { book ->
+                    async {
+                        runCatching {
+                            processOneBatchMatchBook(
+                                book = book,
+                                libraryRootUriString = root
+                            )
+                        }.onFailure {
+                            // 单个任务失败不终止整个批量匹配
+                        }
+                    }
+                }.awaitAll()
             }
 
             _libraryState.update {
                 it.copy(isBatchMatching = false)
             }
+
+            refreshMatchTaskFilterCountsOnce()
 
             setHomeTab(HomeTab.Tasks)
             setMatchTaskFilter(MatchTaskFilter.All)
@@ -474,6 +607,8 @@ class AppViewModel(
                         books = emptyList(),
                         tagItems = emptyList(),
                         matchTasks = emptyList(),
+                        unqueuedUnmatchedBooks = emptyList(),
+                        matchTaskFilterCounts = emptyMap(),
                         selectedTagKeys = emptySet(),
                         searchQuery = "",
                         error = "数据库已清空"
@@ -488,6 +623,7 @@ class AppViewModel(
                 refreshLibraryBooks()
                 observeTagItems()
                 observeMatchTasks()
+                observeMatchTaskFilterCounts()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(error = e.message ?: "清空数据库失败")
@@ -547,13 +683,34 @@ class AppViewModel(
             return
         }
 
-        val candidates = runCatching {
-            hitomiRepository.searchTitle(query)
+        val searchResult = runCatching {
+            hitomiRepository.searchTitle(
+                title = query,
+                timeoutMillis = matchSearchTimeoutMillis()
+            )
         }.getOrElse { e ->
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.Failed,
-                    errorMessage = e.message ?: "搜索失败",
+                    errorMessage = compactDiagnostic(e.message ?: "搜索失败"),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            return
+        }
+
+        val rawCandidates = searchResult.books
+        val candidates = prepareHitomiCandidates(
+            candidates = rawCandidates,
+            localPageCount = localPageCount
+        )
+
+        if (rawCandidates.isEmpty()) {
+            libraryRepository.updateMatchTask(
+                task.copy(
+                    status = MatchTaskStatus.Failed,
+                    errorMessage = compactSearchFailure(searchResult),
+                    candidateCount = 0,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -561,10 +718,18 @@ class AppViewModel(
         }
 
         if (candidates.isEmpty()) {
+            libraryRepository.replaceCandidatesForTask(
+                taskId = taskId,
+                candidates = emptyList(),
+                selectedGalleryId = null
+            )
+
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.Failed,
-                    errorMessage = "没有搜索到候选",
+                    errorMessage = compactDiagnostic(
+                        "候选均被语言过滤；${searchResult.diagnosticSummary}"
+                    ),
                     candidateCount = 0,
                     updatedAt = System.currentTimeMillis()
                 )
@@ -721,6 +886,107 @@ class AppViewModel(
             .trim()
     }
 
+    private fun prepareHitomiCandidates(
+        candidates: List<HitomiBookMeta>,
+        localPageCount: Int?
+    ): List<HitomiBookMeta> {
+        val filteredLanguages = _settingsState.value.filteredMatchLanguages
+
+        return candidates
+            .filter { meta ->
+                !isLanguageFiltered(meta.language, filteredLanguages)
+            }
+            .withIndex()
+            .sortedWith(
+                compareByDescending<IndexedValue<HitomiBookMeta>> {
+                    localPageCount != null &&
+                            localPageCount > 0 &&
+                            it.value.pageCount == localPageCount
+                }.thenBy { it.index }
+            )
+            .map { it.value }
+    }
+
+    private fun prepareStoredCandidates(
+        candidates: List<MatchCandidateEntity>,
+        localPageCount: Int?
+    ): List<MatchCandidateEntity> {
+        val filteredLanguages = _settingsState.value.filteredMatchLanguages
+
+        return candidates
+            .filter { candidate ->
+                !isLanguageFiltered(candidate.language, filteredLanguages)
+            }
+            .withIndex()
+            .sortedWith(
+                compareByDescending<IndexedValue<MatchCandidateEntity>> {
+                    localPageCount != null &&
+                            localPageCount > 0 &&
+                            it.value.pageCount == localPageCount
+                }.thenBy { it.index }
+            )
+            .map { it.value }
+    }
+
+    private fun isLanguageFiltered(
+        language: String?,
+        filteredLanguages: Set<String>
+    ): Boolean {
+        if (filteredLanguages.isEmpty()) return false
+        val normalized = language?.trim()?.lowercase().orEmpty()
+        return normalized.isNotEmpty() && normalized in filteredLanguages
+    }
+
+    private fun parseFilteredMatchLanguages(raw: String): Set<String> {
+        return raw
+            .split(",", "\n", "，")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun matchSearchTimeoutMillis(): Long {
+        return _settingsState.value.matchSearchTimeoutSeconds
+            .coerceIn(
+                MIN_MATCH_SEARCH_TIMEOUT_SECONDS,
+                MAX_MATCH_SEARCH_TIMEOUT_SECONDS
+            ) * 1000L
+    }
+
+    private fun batchMatchThreads(): Int {
+        return _settingsState.value.batchMatchThreads.coerceIn(
+            MIN_BATCH_MATCH_THREADS,
+            MAX_BATCH_MATCH_THREADS
+        )
+    }
+
+    private fun compactSearchFailure(result: HitomiSearchMetaResult): String {
+        return compactDiagnostic(
+            result.failureReason
+                ?: result.diagnosticSummary
+                ?: "没有搜索到候选"
+        )
+    }
+
+    private fun compactDiagnostic(message: String, maxLength: Int = 240): String {
+        val normalized = message
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return if (normalized.length <= maxLength) {
+            normalized
+        } else {
+            normalized.take(maxLength - 1) + "…"
+        }
+    }
+
+    private fun isNoCandidateSearchError(message: String?): Boolean {
+        val text = message?.trim().orEmpty()
+        return text == "没有搜索到候选" ||
+                text.contains("没有提取到候选 ID") ||
+                text.contains("没有搜索到候选")
+    }
+
     fun clearTagFilters() {
         _libraryState.update {
             it.copy(
@@ -818,7 +1084,12 @@ class AppViewModel(
         matchTaskCandidateJob = viewModelScope.launch {
             libraryRepository.observeCandidatesForTask(task.id).collectLatest { candidates ->
                 _matchTaskDetailState.update {
-                    it.copy(candidates = candidates)
+                    it.copy(
+                        candidates = prepareStoredCandidates(
+                            candidates = candidates,
+                            localPageCount = it.task?.localPageCount ?: task.localPageCount
+                        )
+                    )
                 }
             }
         }
@@ -889,6 +1160,7 @@ class AppViewModel(
             val nextTask = if (_settingsState.value.autoOpenNextReviewTask) {
                 libraryRepository.getNextNeedReviewTask(
                     currentTaskId = task.id,
+                    currentUpdatedAt = task.updatedAt,
                     libraryRootUriString = task.libraryRootUriString
                 )
             } else {
@@ -910,14 +1182,69 @@ class AppViewModel(
         val task = _matchTaskDetailState.value.task ?: return
 
         viewModelScope.launch {
+            skipMatchTask(task)
+        }
+    }
+
+    fun skipMatchTaskFromList(task: MatchTaskEntity) {
+        viewModelScope.launch {
+            skipMatchTask(task)
+            refreshMatchTaskFilterCountsOnce()
+        }
+    }
+
+    fun skipUnqueuedBook(book: BookItem) {
+        val root = currentLibraryRoot() ?: return
+
+        viewModelScope.launch {
+            val taskId = libraryRepository.createMatchTask(
+                book = book,
+                libraryRootUriString = root,
+                query = buildMatchQueryFromName(book.displayName),
+                localPageCount = null
+            )
+            val task = libraryRepository.getMatchTask(taskId) ?: return@launch
+
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.Skipped,
-                    errorMessage = "用户手动标记跳过",
+                    errorMessage = SKIPPED_FROM_UNQUEUED_MESSAGE,
                     updatedAt = System.currentTimeMillis()
                 )
             )
+
+            refreshMatchTaskFilterCountsOnce()
         }
+    }
+
+    fun cancelSkippedMatchTask(task: MatchTaskEntity) {
+        if (task.status != MatchTaskStatus.Skipped) return
+
+        viewModelScope.launch {
+            if (task.errorMessage == SKIPPED_FROM_UNQUEUED_MESSAGE) {
+                libraryRepository.deleteMatchTask(task.id)
+            } else {
+                libraryRepository.updateMatchTask(
+                    task.copy(
+                        status = MatchTaskStatus.Failed,
+                        errorMessage = "已取消跳过",
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+
+            refreshMatchTaskFilterCountsOnce()
+        }
+    }
+
+    private suspend fun skipMatchTask(task: MatchTaskEntity) {
+        libraryRepository.updateMatchTask(
+            task.copy(
+                status = MatchTaskStatus.Skipped,
+                errorMessage = "用户手动标记跳过",
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
     fun retryFailedMatchTasksExceptNoCandidates() {
@@ -958,8 +1285,8 @@ class AppViewModel(
                 return@launch
             }
 
-            val retryableTasks = failedTasks.filter { task ->
-                task.errorMessage?.trim() != "没有搜索到候选"
+            val retryableTasks = failedTasks.filterNot { task ->
+                isNoCandidateSearchError(task.errorMessage)
             }
 
             if (retryableTasks.isEmpty()) {
@@ -975,20 +1302,44 @@ class AppViewModel(
                 return@launch
             }
 
-            for (task in retryableTasks) {
-                runCatching {
-                    retryOneMatchTask(task)
-                }.onFailure {
-                    // 单个任务失败不影响其他任务
-                }
+            val batchThreads = batchMatchThreads()
+
+            for (chunk in retryableTasks.chunked(batchThreads)) {
+                chunk.map { task ->
+                    async {
+                        runCatching {
+                            retryOneMatchTask(task)
+                        }.onFailure {
+                            // 单个任务失败不影响其他任务
+                        }
+                    }
+                }.awaitAll()
             }
 
             _libraryState.update {
                 it.copy(isBatchMatching = false)
             }
 
+            refreshMatchTaskFilterCountsOnce()
+
             setHomeTab(HomeTab.Tasks)
             setMatchTaskFilter(MatchTaskFilter.All)
+        }
+    }
+
+    fun retryFailedMatchTask(task: MatchTaskEntity) {
+        if (task.status != MatchTaskStatus.Failed) return
+
+        viewModelScope.launch {
+            runCatching {
+                retryOneMatchTask(task)
+            }.onFailure { e ->
+                _libraryState.update {
+                    it.copy(error = e.message ?: "重试失败")
+                }
+            }
+
+            refreshMatchTaskFilterCountsOnce()
         }
     }
 
@@ -1031,6 +1382,7 @@ class AppViewModel(
         refreshLibraryBooks()
         observeTagItems()
         observeMatchTasks()
+        observeMatchTaskFilterCounts()
 
         scanFolder(uri)
     }
@@ -1187,13 +1539,38 @@ class AppViewModel(
         }
     }
 
+    fun openHitomiSearchWebView(): Boolean {
+        val query = _matchState.value.query.trim()
+
+        if (query.isBlank()) {
+            _matchState.update {
+                it.copy(error = "搜索词不能为空")
+            }
+            return false
+        }
+
+        val encoded = Uri.encode(query.lowercase(Locale.ROOT))
+
+        _hitomiWebViewState.value = HitomiWebViewUiState(
+            title = "搜索结果",
+            url = "https://hitomi.la/search.html?$encoded"
+        )
+
+        return true
+    }
+
     fun searchMatch() {
         val state = _matchState.value
         val query = state.query.trim()
 
         if (query.isBlank()) {
             _matchState.update {
-                it.copy(error = "搜索词不能为空")
+                it.copy(
+                    error = "搜索词不能为空",
+                    searchDiagnosticSummary = null,
+                    searchDiagnosticRaw = null,
+                    showSearchDiagnosticRaw = false
+                )
             }
             return
         }
@@ -1202,32 +1579,68 @@ class AppViewModel(
             it.copy(
                 isSearching = true,
                 error = null,
-                candidates = emptyList()
+                candidates = emptyList(),
+                searchDiagnosticSummary = null,
+                searchDiagnosticRaw = null,
+                showSearchDiagnosticRaw = false
             )
         }
 
         viewModelScope.launch {
             val result = runCatching {
-                hitomiRepository.searchTitle(query)
+                hitomiRepository.searchTitle(
+                    title = query,
+                    timeoutMillis = matchSearchTimeoutMillis()
+                )
             }
 
-            result.onSuccess { candidates ->
+            result.onSuccess { searchResult ->
+                val rawCandidates = searchResult.books
+                val candidates = prepareHitomiCandidates(
+                    candidates = rawCandidates,
+                    localPageCount = _matchState.value.localPageCount
+                )
+                val hasDiagnostic = rawCandidates.isEmpty() || candidates.isEmpty()
+
                 _matchState.update {
                     it.copy(
                         candidates = candidates,
                         isSearching = false,
-                        error = if (candidates.isEmpty()) {
-                            "没有搜索到候选，可能是 WebView 搜索失败或标题需要缩短"
+                        error = when {
+                            rawCandidates.isEmpty() -> {
+                                searchResult.failureReason
+                                    ?: "没有搜索到候选，可能是 WebView 搜索失败或标题需要缩短"
+                            }
+
+                            candidates.isEmpty() -> {
+                                "候选均被语言过滤"
+                            }
+
+                            else -> {
+                                null
+                            }
+                        },
+                        searchDiagnosticSummary = if (hasDiagnostic) {
+                            searchResult.diagnosticSummary
                         } else {
                             null
-                        }
+                        },
+                        searchDiagnosticRaw = if (hasDiagnostic) {
+                            searchResult.diagnosticRaw
+                        } else {
+                            null
+                        },
+                        showSearchDiagnosticRaw = false
                     )
                 }
             }.onFailure { e ->
                 _matchState.update {
                     it.copy(
                         isSearching = false,
-                        error = e.message ?: "搜索失败"
+                        error = e.message ?: "搜索失败",
+                        searchDiagnosticSummary = e.message ?: "搜索失败",
+                        searchDiagnosticRaw = e.stackTraceToString(),
+                        showSearchDiagnosticRaw = false
                     )
                 }
             }
@@ -1358,17 +1771,25 @@ class AppViewModel(
                 return@launch
             }
 
-            for (task in failedTasks) {
-                runCatching {
-                    retryOneMatchTask(task)
-                }.onFailure {
-                    // 单个任务失败不影响其他任务
-                }
+            val batchThreads = batchMatchThreads()
+
+            for (chunk in failedTasks.chunked(batchThreads)) {
+                chunk.map { task ->
+                    async {
+                        runCatching {
+                            retryOneMatchTask(task)
+                        }.onFailure {
+                            // 单个任务失败不影响其他任务
+                        }
+                    }
+                }.awaitAll()
             }
 
             _libraryState.update {
                 it.copy(isBatchMatching = false)
             }
+
+            refreshMatchTaskFilterCountsOnce()
 
             setHomeTab(HomeTab.Tasks)
             setMatchTaskFilter(MatchTaskFilter.All)
@@ -1402,13 +1823,40 @@ class AppViewModel(
             return
         }
 
-        val candidates = runCatching {
-            hitomiRepository.searchTitle(query)
+        val searchResult = runCatching {
+            hitomiRepository.searchTitle(
+                title = query,
+                timeoutMillis = matchSearchTimeoutMillis()
+            )
         }.getOrElse { e ->
             libraryRepository.updateMatchTask(
                 runningTask.copy(
                     status = MatchTaskStatus.Failed,
-                    errorMessage = e.message ?: "重新搜索失败",
+                    errorMessage = compactDiagnostic(e.message ?: "重新搜索失败"),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            return
+        }
+
+        val rawCandidates = searchResult.books
+        val candidates = prepareHitomiCandidates(
+            candidates = rawCandidates,
+            localPageCount = localPageCount
+        )
+
+        if (rawCandidates.isEmpty()) {
+            libraryRepository.replaceCandidatesForTask(
+                taskId = runningTask.id,
+                candidates = emptyList(),
+                selectedGalleryId = null
+            )
+
+            libraryRepository.updateMatchTask(
+                runningTask.copy(
+                    status = MatchTaskStatus.Failed,
+                    candidateCount = 0,
+                    errorMessage = compactSearchFailure(searchResult),
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -1426,7 +1874,9 @@ class AppViewModel(
                 runningTask.copy(
                     status = MatchTaskStatus.Failed,
                     candidateCount = 0,
-                    errorMessage = "没有搜索到候选",
+                    errorMessage = compactDiagnostic(
+                        "候选均被语言过滤；${searchResult.diagnosticSummary}"
+                    ),
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -1496,7 +1946,10 @@ class AppViewModel(
         if (galleryId.isNullOrBlank()) {
             _matchState.update {
                 it.copy(
-                    error = "请输入有效的 Gallery ID"
+                    error = "请输入有效的 Gallery ID",
+                    searchDiagnosticSummary = null,
+                    searchDiagnosticRaw = null,
+                    showSearchDiagnosticRaw = false
                 )
             }
             return
@@ -1507,7 +1960,10 @@ class AppViewModel(
                 it.copy(
                     isSearching = true,
                     error = null,
-                    candidates = emptyList()
+                    candidates = emptyList(),
+                    searchDiagnosticSummary = null,
+                    searchDiagnosticRaw = null,
+                    showSearchDiagnosticRaw = false
                 )
             }
 
@@ -1519,18 +1975,96 @@ class AppViewModel(
                 _matchState.update {
                     it.copy(
                         isSearching = false,
-                        error = "没有找到 ID：$galleryId"
+                        error = "没有找到 ID：$galleryId",
+                        searchDiagnosticSummary = null,
+                        searchDiagnosticRaw = null,
+                        showSearchDiagnosticRaw = false
                     )
                 }
                 return@launch
             }
 
+            val candidates = prepareHitomiCandidates(
+                candidates = listOf(meta),
+                localPageCount = _matchState.value.localPageCount
+            )
+
             _matchState.update {
                 it.copy(
                     isSearching = false,
-                    error = null,
-                    candidates = listOf(meta)
+                    error = if (candidates.isEmpty()) {
+                        "候选均被语言过滤"
+                    } else {
+                        null
+                    },
+                    searchDiagnosticSummary = null,
+                    searchDiagnosticRaw = null,
+                    showSearchDiagnosticRaw = false,
+                    candidates = candidates
                 )
+            }
+        }
+    }
+
+    fun exportDatabase(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                libraryRepository.exportDatabaseTo(uri)
+
+                _libraryState.update {
+                    it.copy(error = "数据库已导出")
+                }
+            } catch (e: Exception) {
+                _libraryState.update {
+                    it.copy(error = e.message ?: "导出数据库失败")
+                }
+            }
+        }
+    }
+
+    fun importDatabase(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                libraryObserveJob?.cancel()
+                tagObserveJob?.cancel()
+                taskObserveJob?.cancel()
+                taskCountObserveJob?.cancel()
+                matchTaskDetailJob?.cancel()
+                matchTaskCandidateJob?.cancel()
+
+                libraryRepository.importDatabaseFrom(uri)
+
+                _bookDetailState.value = BookDetailUiState()
+                _matchTaskDetailState.value = MatchTaskDetailUiState()
+                _matchState.value = MatchUiState()
+                _readerState.value = ReaderUiState()
+
+                _libraryState.update {
+                    it.copy(
+                        books = emptyList(),
+                        tagItems = emptyList(),
+                        matchTasks = emptyList(),
+                        unqueuedUnmatchedBooks = emptyList(),
+                        matchTaskFilterCounts = emptyMap(),
+                        selectedTagKeys = emptySet(),
+                        searchQuery = "",
+                        error = "数据库已导入"
+                    )
+                }
+
+                refreshLibraryBooks()
+                observeTagItems()
+                observeMatchTasks()
+                observeMatchTaskFilterCounts()
+            } catch (e: Exception) {
+                _libraryState.update {
+                    it.copy(error = e.message ?: "导入数据库失败")
+                }
+
+                refreshLibraryBooks()
+                observeTagItems()
+                observeMatchTasks()
+                observeMatchTaskFilterCounts()
             }
         }
     }
@@ -1615,6 +2149,7 @@ class AppViewModel(
                 refreshLibraryBooks()
                 observeTagItems()
                 observeMatchTasks()
+                observeMatchTaskFilterCounts()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(
@@ -1790,6 +2325,88 @@ class AppViewModel(
         }
     }
 
+    fun setFilteredMatchLanguages(raw: String) {
+        val languages = parseFilteredMatchLanguages(raw)
+
+        prefs.edit()
+            .putString(KEY_FILTERED_MATCH_LANGUAGES, raw)
+            .apply()
+
+        _settingsState.update {
+            it.copy(
+                filteredMatchLanguagesText = raw,
+                filteredMatchLanguages = languages
+            )
+        }
+
+        val detailTask = _matchTaskDetailState.value.task
+        if (detailTask != null) {
+            openMatchTaskDetail(detailTask)
+        }
+    }
+
+    fun setMatchSearchTimeoutSeconds(raw: String) {
+        val text = raw.filter { it.isDigit() }.take(3)
+        val parsed = text.toIntOrNull()
+
+        if (parsed == null) {
+            _settingsState.update {
+                it.copy(matchSearchTimeoutSecondsText = text)
+            }
+            return
+        }
+
+        val fixed = parsed.coerceIn(
+            MIN_MATCH_SEARCH_TIMEOUT_SECONDS,
+            MAX_MATCH_SEARCH_TIMEOUT_SECONDS
+        )
+
+        prefs.edit()
+            .putInt(KEY_MATCH_SEARCH_TIMEOUT_SECONDS, fixed)
+            .apply()
+
+        _settingsState.update {
+            it.copy(
+                matchSearchTimeoutSecondsText = text,
+                matchSearchTimeoutSeconds = fixed
+            )
+        }
+    }
+
+    fun setBatchMatchThreads(raw: String) {
+        val text = raw.filter { it.isDigit() }.take(2)
+        val parsed = text.toIntOrNull()
+
+        if (parsed == null) {
+            _settingsState.update {
+                it.copy(batchMatchThreadsText = text)
+            }
+            return
+        }
+
+        val fixed = parsed.coerceIn(
+            MIN_BATCH_MATCH_THREADS,
+            MAX_BATCH_MATCH_THREADS
+        )
+
+        prefs.edit()
+            .putInt(KEY_BATCH_MATCH_THREADS, fixed)
+            .apply()
+
+        _settingsState.update {
+            it.copy(
+                batchMatchThreadsText = text,
+                batchMatchThreads = fixed
+            )
+        }
+    }
+
+    fun toggleSearchDiagnosticRaw() {
+        _matchState.update {
+            it.copy(showSearchDiagnosticRaw = !it.showSearchDiagnosticRaw)
+        }
+    }
+
     fun setShowRematchButtonInLibrary(show: Boolean) {
         prefs.edit()
             .putBoolean(KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY, show)
@@ -1846,5 +2463,15 @@ class AppViewModel(
         private const val KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY = "show_rematch_button_in_library"
         private const val KEY_LIBRARY_LAYOUT_MODE = "library_layout_mode"
         private const val KEY_LIBRARY_GRID_COLUMNS = "library_grid_columns"
+        private const val KEY_FILTERED_MATCH_LANGUAGES = "filtered_match_languages"
+        private const val KEY_MATCH_SEARCH_TIMEOUT_SECONDS = "match_search_timeout_seconds"
+        private const val DEFAULT_MATCH_SEARCH_TIMEOUT_SECONDS = 30
+        private const val MIN_MATCH_SEARCH_TIMEOUT_SECONDS = 10
+        private const val MAX_MATCH_SEARCH_TIMEOUT_SECONDS = 360
+        private const val KEY_BATCH_MATCH_THREADS = "batch_match_threads"
+        private const val DEFAULT_BATCH_MATCH_THREADS = 1
+        private const val MIN_BATCH_MATCH_THREADS = 1
+        private const val MAX_BATCH_MATCH_THREADS = 6
+        private const val SKIPPED_FROM_UNQUEUED_MESSAGE = "用户从未匹配列表手动跳过"
     }
 }

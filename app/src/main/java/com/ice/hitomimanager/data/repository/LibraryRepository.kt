@@ -1,7 +1,9 @@
 package com.ice.hitomimanager.data.repository
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.ice.hitomimanager.data.local.AppDatabase
 import com.ice.hitomimanager.data.local.entity.BookEntity
 import com.ice.hitomimanager.data.local.entity.BookTagEntity
@@ -11,25 +13,38 @@ import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.toBookItem
 import com.ice.hitomimanager.domain.scanner.DocumentTreeScanner
+import com.ice.hitomimanager.domain.scanner.CoverCache
+import com.ice.hitomimanager.domain.reader.ComicArchiveReader
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
+import com.ice.hitomimanager.data.model.MatchTaskFilter
 import com.ice.hitomimanager.data.model.MatchTaskStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.room.withTransaction
 import com.ice.hitomimanager.domain.scanner.ScanProgress
+import kotlinx.coroutines.flow.combine
+import java.io.File
 
 class LibraryRepository(
     private val context: Context
 ) {
-    private val db = AppDatabase.get(context)
-    private val bookDao = db.bookDao()
-    private val tagDao = db.tagDao()
+    private var db = AppDatabase.get(context)
+    private var bookDao = db.bookDao()
+    private var tagDao = db.tagDao()
     private val scanner = DocumentTreeScanner(context)
+    private val coverCache = CoverCache(context)
 
-    private val matchTaskDao = db.matchTaskDao()
+    private var matchTaskDao = db.matchTaskDao()
+
+    private fun reconnectDatabase() {
+        db = AppDatabase.get(context)
+        bookDao = db.bookDao()
+        tagDao = db.tagDao()
+        matchTaskDao = db.matchTaskDao()
+    }
 
     fun observeBooks(
         libraryRootUriString: String
@@ -54,6 +69,47 @@ class LibraryRepository(
         }
     }
 
+    fun observeMatchTaskFilterCounts(
+        libraryRootUriString: String
+    ): Flow<Map<MatchTaskFilter, Int>> {
+        return combine(
+            matchTaskDao.observeStatusCounts(libraryRootUriString),
+            bookDao.observeUnqueuedUnmatchedBookCount(libraryRootUriString)
+        ) { statusCounts, unqueuedCount ->
+            buildMatchTaskFilterCounts(statusCounts, unqueuedCount)
+        }
+    }
+
+    suspend fun getMatchTaskFilterCounts(
+        libraryRootUriString: String
+    ): Map<MatchTaskFilter, Int> {
+        return buildMatchTaskFilterCounts(
+            statusCounts = matchTaskDao.getStatusCounts(libraryRootUriString),
+            unqueuedCount = bookDao.countUnqueuedUnmatchedBooks(libraryRootUriString)
+        )
+    }
+
+    private fun buildMatchTaskFilterCounts(
+        statusCounts: List<com.ice.hitomimanager.data.local.dao.MatchTaskStatusCount>,
+        unqueuedCount: Int
+    ): Map<MatchTaskFilter, Int> {
+        val byStatus = statusCounts.associate { it.status to it.count }
+        val running = listOf(
+            MatchTaskStatus.Pending,
+            MatchTaskStatus.Running
+        ).sumOf { byStatus[it] ?: 0 }
+
+        return mapOf(
+            MatchTaskFilter.All to byStatus.values.sum(),
+            MatchTaskFilter.Running to running,
+            MatchTaskFilter.Success to (byStatus[MatchTaskStatus.AutoMatched] ?: 0),
+            MatchTaskFilter.NeedReview to (byStatus[MatchTaskStatus.NeedReview] ?: 0),
+            MatchTaskFilter.Failed to (byStatus[MatchTaskStatus.Failed] ?: 0),
+            MatchTaskFilter.Skipped to (byStatus[MatchTaskStatus.Skipped] ?: 0),
+            MatchTaskFilter.Unqueued to unqueuedCount
+        )
+    }
+
     suspend fun getUnmatchedBooks(
         libraryRootUriString: String
     ): List<BookItem> {
@@ -61,9 +117,137 @@ class LibraryRepository(
             .map { it.toBookItem() }
     }
 
+    suspend fun repairMissingCover(
+        book: BookItem
+    ) {
+        withContext(Dispatchers.IO) {
+            val currentPath = book.coverFilePath
+            if (!currentPath.isNullOrBlank() && File(currentPath).exists()) {
+                return@withContext
+            }
+
+            val documentFile = DocumentFile.fromSingleUri(
+                context,
+                Uri.parse(book.uriString)
+            ) ?: return@withContext
+
+            val coverFile = ComicArchiveReader.extractCoverToPersistentCache(
+                context = context,
+                archiveUri = documentFile.uri
+            ) ?: return@withContext
+
+            coverCache.saveCover(
+                file = documentFile,
+                coverPath = coverFile.absolutePath
+            )
+
+            val now = System.currentTimeMillis()
+            bookDao.updateCoverFilePath(
+                uriString = book.uriString,
+                coverFilePath = coverFile.absolutePath,
+                updatedAt = now
+            )
+            matchTaskDao.updateCoverFilePathForBook(
+                bookUriString = book.uriString,
+                coverFilePath = coverFile.absolutePath,
+                updatedAt = now
+            )
+        }
+    }
+
     suspend fun clearDatabase() {
         withContext(Dispatchers.IO) {
             db.clearAllTables()
+        }
+    }
+
+    suspend fun exportDatabaseTo(uri: Uri) {
+        withContext(Dispatchers.IO) {
+            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use {
+                while (it.moveToNext()) {
+                    // Drain the cursor so SQLite completes the checkpoint.
+                }
+            }
+
+            val databaseFile = context.getDatabasePath("hitomi_manager.db")
+            require(databaseFile.exists()) {
+                "数据库文件不存在"
+            }
+
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                databaseFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: error("无法打开导出文件")
+        }
+    }
+
+    suspend fun importDatabaseFrom(uri: Uri) {
+        withContext(Dispatchers.IO) {
+            val databaseFile = context.getDatabasePath("hitomi_manager.db")
+            val tempFile = File(databaseFile.parentFile, "hitomi_manager_import_tmp.db")
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: error("无法打开导入文件")
+
+            validateDatabaseFile(tempFile)
+
+            AppDatabase.closeInstance()
+
+            try {
+                databaseFile.parentFile?.mkdirs()
+                if (databaseFile.exists()) {
+                    databaseFile.delete()
+                }
+                deleteDatabaseSidecarFiles(databaseFile)
+
+                tempFile.inputStream().use { input ->
+                    databaseFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                tempFile.delete()
+                deleteDatabaseSidecarFiles(databaseFile)
+                reconnectDatabase()
+            } catch (e: Exception) {
+                reconnectDatabase()
+                throw e
+            }
+        }
+    }
+
+    private fun validateDatabaseFile(file: File) {
+        require(file.exists() && file.length() > 0L) {
+            "导入文件为空"
+        }
+
+        val sqlite = SQLiteDatabase.openDatabase(
+            file.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY
+        )
+
+        sqlite.use { database ->
+            database.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
+                require(cursor.moveToFirst() && cursor.getString(0).equals("ok", ignoreCase = true)) {
+                    "导入文件不是有效的 SQLite 数据库"
+                }
+            }
+        }
+    }
+
+    private fun deleteDatabaseSidecarFiles(databaseFile: File) {
+        listOf(
+            File("${databaseFile.absolutePath}-wal"),
+            File("${databaseFile.absolutePath}-shm")
+        ).forEach { file ->
+            if (file.exists()) {
+                file.delete()
+            }
         }
     }
 
@@ -97,6 +281,13 @@ class LibraryRepository(
         task: MatchTaskEntity
     ) {
         matchTaskDao.updateTask(task)
+    }
+
+    suspend fun deleteMatchTask(
+        taskId: Long
+    ) {
+        matchTaskDao.deleteCandidatesForTask(taskId)
+        matchTaskDao.deleteTask(taskId)
     }
 
     suspend fun getMatchTask(
@@ -372,11 +563,17 @@ class LibraryRepository(
 
     suspend fun getNextNeedReviewTask(
         currentTaskId: Long,
+        currentUpdatedAt: Long,
         libraryRootUriString: String?
     ): MatchTaskEntity? {
         if (libraryRootUriString == null) return null
 
-        return matchTaskDao.getNextTaskByStatus(
+        return matchTaskDao.getNextTaskByStatusAfterCursor(
+            libraryRootUriString = libraryRootUriString,
+            status = MatchTaskStatus.NeedReview,
+            currentTaskId = currentTaskId,
+            currentUpdatedAt = currentUpdatedAt
+        ) ?: matchTaskDao.getFirstTaskByStatus(
             libraryRootUriString = libraryRootUriString,
             status = MatchTaskStatus.NeedReview,
             currentTaskId = currentTaskId

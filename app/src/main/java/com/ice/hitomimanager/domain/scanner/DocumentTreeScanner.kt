@@ -82,7 +82,7 @@ class DocumentTreeScanner(
                 cachedCoverPath
             } else {
                 val generatedCover = runCatching {
-                    ComicArchiveReader.extractCoverToCache(
+                    ComicArchiveReader.extractCoverToPersistentCache(
                         context = context,
                         archiveUri = file.uri
                     )

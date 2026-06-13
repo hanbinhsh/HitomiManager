@@ -6,6 +6,13 @@ data class HitomiCandidate(
     val searchTitle: String
 )
 
+data class HitomiSearchMetaResult(
+    val books: List<HitomiBookMeta>,
+    val diagnosticSummary: String,
+    val diagnosticRaw: String,
+    val failureReason: String?
+)
+
 data class HitomiTagMeta(
     val namespace: String,
     val name: String

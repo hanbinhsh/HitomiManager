@@ -64,6 +64,57 @@ object ComicArchiveReader {
         )?.file
     }
 
+    suspend fun extractCoverToPersistentCache(
+        context: Context,
+        archiveUri: Uri
+    ): File? = withContext(Dispatchers.IO) {
+        val pages = listPages(context, archiveUri)
+        val firstPage = pages.firstOrNull() ?: return@withContext null
+        val archiveKey = archiveUri.toString()
+            .hashCode()
+            .toString()
+            .replace("-", "m")
+        val ext = firstPage.substringAfterLast('.', missingDelimiterValue = "webp")
+            .lowercase()
+        val dir = File(context.filesDir, "covers/$archiveKey")
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+
+        val outFile = File(dir, "cover.$ext")
+        if (outFile.exists() && outFile.length() > 0L) {
+            return@withContext outFile
+        }
+
+        var found = false
+
+        context.contentResolver.openInputStream(archiveUri)?.use { input ->
+            ZipInputStream(BufferedInputStream(input)).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+
+                    if (!entry.isDirectory && entry.name == firstPage) {
+                        found = true
+                        FileOutputStream(outFile).use { output ->
+                            zip.copyTo(output)
+                        }
+                        zip.closeEntry()
+                        break
+                    }
+
+                    zip.closeEntry()
+                }
+            }
+        }
+
+        if (found && outFile.exists() && outFile.length() > 0L) {
+            outFile
+        } else {
+            outFile.delete()
+            null
+        }
+    }
+
     suspend fun extractPageWithInfo(
         context: Context,
         archiveUri: Uri,

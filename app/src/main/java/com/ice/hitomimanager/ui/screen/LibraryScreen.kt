@@ -1,7 +1,9 @@
 package com.ice.hitomimanager.ui.screen
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -11,10 +13,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FilterAlt
@@ -42,6 +48,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,11 +59,10 @@ import com.ice.hitomimanager.data.model.HomeTab
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import java.io.File
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.windowInsetsPadding
 import com.ice.hitomimanager.data.model.MatchTaskFilter
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import com.ice.hitomimanager.data.model.MatchTaskStatus
@@ -70,8 +76,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,6 +105,10 @@ fun LibraryScreen(
     onMatchBook: (BookItem) -> Unit,
     onMatchTaskFilterChange: (MatchTaskFilter) -> Unit,
     onOpenMatchTask: (MatchTaskEntity) -> Unit,
+    onSkipMatchTask: (MatchTaskEntity) -> Unit,
+    onCancelSkippedMatchTask: (MatchTaskEntity) -> Unit,
+    onSkipUnqueuedBook: (BookItem) -> Unit,
+    onRetryMatchTask: (MatchTaskEntity) -> Unit,
     onRetryFailedMatchTasks: () -> Unit,
     showRematchButtonInLibrary: Boolean,
     onRetryFailedExceptNoCandidates: () -> Unit,
@@ -106,6 +118,47 @@ fun LibraryScreen(
     onToggleLibraryLayoutMode: () -> Unit,
     onTagFilterTabChange: (TagFilterTab) -> Unit,
 ) {
+    val libraryListState = rememberLazyListState()
+    val libraryGridState = rememberLazyGridState()
+    val tagListState = rememberLazyListState()
+    val searchListState = rememberLazyListState()
+    val searchGridState = rememberLazyGridState()
+    val taskListState = rememberLazyListState()
+
+    suspend fun scrollTabToTop(tab: HomeTab) {
+        when (tab) {
+            HomeTab.Library -> {
+                if (libraryLayoutMode == LibraryLayoutMode.Grid) {
+                    libraryGridState.scrollToItem(0)
+                } else {
+                    libraryListState.scrollToItem(0)
+                }
+            }
+
+            HomeTab.Tags -> {
+                tagListState.scrollToItem(0)
+            }
+
+            HomeTab.Search -> {
+                if (libraryLayoutMode == LibraryLayoutMode.Grid) {
+                    searchGridState.scrollToItem(0)
+                } else {
+                    searchListState.scrollToItem(0)
+                }
+            }
+
+            HomeTab.Tasks -> {
+                taskListState.scrollToItem(0)
+            }
+        }
+    }
+
+    LaunchedEffect(state.homeTabReselectTick) {
+        if (state.homeTabReselectTick > 0L) {
+            scrollTabToTop(state.homeTab)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -179,6 +232,8 @@ fun LibraryScreen(
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
                     libraryLayoutMode = libraryLayoutMode,
                     libraryGridColumns = libraryGridColumns,
+                    listState = libraryListState,
+                    gridState = libraryGridState,
                     onClearTagFilters = onClearTagFilters,
                     onClearSearch = onClearSearch,
                     onOpenBook = onOpenBook,
@@ -193,6 +248,7 @@ fun LibraryScreen(
                         .padding(paddingValues),
                     state = state,
                     showTagNamespacePrefix = showTagNamespacePrefix,
+                    listState = tagListState,
                     onToggleTag = onToggleTag,
                     onClearTagFilters = onClearTagFilters,
                     onTagSortModeChange = onTagSortModeChange,
@@ -209,6 +265,8 @@ fun LibraryScreen(
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
                     libraryLayoutMode = libraryLayoutMode,
                     libraryGridColumns = libraryGridColumns,
+                    listState = searchListState,
+                    gridState = searchGridState,
                     onSearchQueryChange = onSearchQueryChange,
                     onClearSearch = onClearSearch,
                     onOpenBook = onOpenBook,
@@ -222,8 +280,14 @@ fun LibraryScreen(
                         .fillMaxSize()
                         .padding(paddingValues),
                     state = state,
+                    listState = taskListState,
                     onFilterChange = onMatchTaskFilterChange,
                     onOpenTask = onOpenMatchTask,
+                    onOpenUnqueuedBook = onMatchBook,
+                    onSkipTask = onSkipMatchTask,
+                    onCancelSkippedTask = onCancelSkippedMatchTask,
+                    onSkipUnqueuedBook = onSkipUnqueuedBook,
+                    onRetryTask = onRetryMatchTask,
                     onRetryFailedTasks = onRetryFailedMatchTasks,
                     onRetryFailedExceptNoCandidates = onRetryFailedExceptNoCandidates,
                     onStartBatchMatch = onStartBatchMatch
@@ -258,6 +322,18 @@ private fun NoFolderContent(
 }
 
 @Composable
+private fun ResultCountText(
+    text: String
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+    )
+}
+
+@Composable
 private fun LibraryContent(
     modifier: Modifier,
     state: LibraryUiState,
@@ -265,6 +341,8 @@ private fun LibraryContent(
     showRematchButtonInLibrary: Boolean,
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
+    listState: LazyListState,
+    gridState: LazyGridState,
     onClearTagFilters: () -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
@@ -303,6 +381,10 @@ private fun LibraryContent(
             )
         }
 
+        ResultCountText(
+            text = "共 ${state.books.size} 本"
+        )
+
         if (!state.isScanning && state.books.isEmpty()) {
             EmptyHint(
                 text = "没有符合条件的作品。"
@@ -312,6 +394,8 @@ private fun LibraryContent(
                 books = state.books,
                 layoutMode = libraryLayoutMode,
                 gridColumns = libraryGridColumns,
+                listState = listState,
+                gridState = gridState,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
@@ -325,6 +409,8 @@ private fun SearchContent(
     modifier: Modifier,
     state: LibraryUiState,
     showRematchButtonInLibrary: Boolean,
+    listState: LazyListState,
+    gridState: LazyGridState,
     onSearchQueryChange: (String) -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
@@ -359,10 +445,16 @@ private fun SearchContent(
             }
         }
 
+        ResultCountText(
+            text = "共 ${state.books.size} 本"
+        )
+
         BookShelfContent(
             books = state.books,
             layoutMode = libraryLayoutMode,
             gridColumns = libraryGridColumns,
+            listState = listState,
+            gridState = gridState,
             showRematchButtonInLibrary = showRematchButtonInLibrary,
             onOpenBook = onOpenBook,
             onMatchBook = onMatchBook
@@ -376,6 +468,7 @@ private fun TagFilterContent(
     modifier: Modifier,
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
+    listState: LazyListState,
     onToggleTag: (TagCountItem) -> Unit,
     onClearTagFilters: () -> Unit,
     onTagSortModeChange: (TagSortMode) -> Unit,
@@ -428,6 +521,7 @@ private fun TagFilterContent(
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 16.dp,
@@ -589,6 +683,7 @@ private fun ActiveFilterBanner(
 @Composable
 private fun BookList(
     books: List<BookItem>,
+    listState: LazyListState,
     showRematchButtonInLibrary: Boolean,
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
@@ -599,6 +694,7 @@ private fun BookList(
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
@@ -630,7 +726,7 @@ private fun BookListItem(
 
             if (coverPath != null) {
                 AsyncImage(
-                    model = File(coverPath),
+                    model = coverImageModel(coverPath),
                     contentDescription = book.displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -781,12 +877,11 @@ private fun CompactBottomBar(
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.navigationBars)
+            .navigationBarsPadding()
+            .height(48.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
+            modifier = Modifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             CompactBottomBarItem(
@@ -794,12 +889,13 @@ private fun CompactBottomBar(
                 icon = {
                     Icon(
                         imageVector = Icons.Filled.Home,
-                        contentDescription = "书架"
+                        contentDescription = "书架",
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 label = "书架",
                 onClick = {
-                    onTabSelected(HomeTab.Library)
+                onTabSelected(HomeTab.Library)
                 },
                 modifier = Modifier.weight(1f)
             )
@@ -809,12 +905,13 @@ private fun CompactBottomBar(
                 icon = {
                     Icon(
                         imageVector = Icons.Filled.FilterAlt,
-                        contentDescription = "筛选"
+                        contentDescription = "筛选",
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 label = "筛选",
                 onClick = {
-                    onTabSelected(HomeTab.Tags)
+                onTabSelected(HomeTab.Tags)
                 },
                 modifier = Modifier.weight(1f)
             )
@@ -824,12 +921,13 @@ private fun CompactBottomBar(
                 icon = {
                     Icon(
                         imageVector = Icons.Filled.Search,
-                        contentDescription = "搜索"
+                        contentDescription = "搜索",
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 label = "搜索",
                 onClick = {
-                    onTabSelected(HomeTab.Search)
+                onTabSelected(HomeTab.Search)
                 },
                 modifier = Modifier.weight(1f)
             )
@@ -839,12 +937,13 @@ private fun CompactBottomBar(
                 icon = {
                     Icon(
                         imageVector = Icons.Filled.Assignment,
-                        contentDescription = "任务"
+                        contentDescription = "任务",
+                        modifier = Modifier.size(20.dp)
                     )
                 },
                 label = "任务",
                 onClick = {
-                    onTabSelected(HomeTab.Tasks)
+                onTabSelected(HomeTab.Tasks)
                 },
                 modifier = Modifier.weight(1f)
             )
@@ -869,7 +968,13 @@ private fun CompactBottomBarItem(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .clickable(onClick = onClick),
+            .pointerInput(onClick) {
+                detectTapGestures(
+                    onTap = {
+                        onClick()
+                    }
+                )
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -887,12 +992,33 @@ private fun CompactBottomBarItem(
     }
 }
 
+private fun coverImageModel(
+    coverPath: String
+): Any {
+    return when {
+        coverPath.startsWith("content://", ignoreCase = true) ||
+                coverPath.startsWith("file://", ignoreCase = true) -> {
+            Uri.parse(coverPath)
+        }
+
+        else -> {
+            File(coverPath)
+        }
+    }
+}
+
 @Composable
 private fun MatchTaskContent(
     modifier: Modifier,
     state: LibraryUiState,
+    listState: LazyListState,
     onFilterChange: (MatchTaskFilter) -> Unit,
     onOpenTask: (MatchTaskEntity) -> Unit,
+    onOpenUnqueuedBook: (BookItem) -> Unit,
+    onSkipTask: (MatchTaskEntity) -> Unit,
+    onCancelSkippedTask: (MatchTaskEntity) -> Unit,
+    onSkipUnqueuedBook: (BookItem) -> Unit,
+    onRetryTask: (MatchTaskEntity) -> Unit,
     onRetryFailedTasks: () -> Unit,
     onRetryFailedExceptNoCandidates: () -> Unit,
     onStartBatchMatch: () -> Unit
@@ -1015,12 +1141,14 @@ private fun MatchTaskContent(
         modifier = modifier
     ) {
         LazyColumn(
+            state = listState,
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
                 TaskFilterRow(
                     selected = state.taskFilter,
+                    counts = state.matchTaskFilterCounts,
                     isBatchMatching = state.isBatchMatching,
                     onFilterChange = onFilterChange,
                     onRetryFailedTasks = {
@@ -1055,7 +1183,18 @@ private fun MatchTaskContent(
                     }
                 } else {
                     items(state.unqueuedUnmatchedBooks) { book ->
-                        UnqueuedBookItem(book)
+                        UnqueuedBookItem(
+                            book = book,
+                            onClick = {
+                                onOpenUnqueuedBook(book)
+                            },
+                            onMatch = {
+                                onOpenUnqueuedBook(book)
+                            },
+                            onSkip = {
+                                onSkipUnqueuedBook(book)
+                            }
+                        )
                     }
                 }
             } else {
@@ -1069,6 +1208,27 @@ private fun MatchTaskContent(
                             task = task,
                             onClick = {
                                 onOpenTask(task)
+                            },
+                            onSkip = if (state.taskFilter == MatchTaskFilter.Failed) {
+                                {
+                                    onSkipTask(task)
+                                }
+                            } else {
+                                null
+                            },
+                            onRetry = if (state.taskFilter == MatchTaskFilter.Failed) {
+                                {
+                                    onRetryTask(task)
+                                }
+                            } else {
+                                null
+                            },
+                            onCancelSkipped = if (state.taskFilter == MatchTaskFilter.Skipped) {
+                                {
+                                    onCancelSkippedTask(task)
+                                }
+                            } else {
+                                null
                             }
                         )
                     }
@@ -1080,7 +1240,10 @@ private fun MatchTaskContent(
 
 @Composable
 private fun UnqueuedBookItem(
-    book: BookItem
+    book: BookItem,
+    onClick: () -> Unit,
+    onMatch: () -> Unit,
+    onSkip: () -> Unit
 ) {
     ListItem(
         leadingContent = {
@@ -1088,7 +1251,7 @@ private fun UnqueuedBookItem(
 
             if (coverPath != null) {
                 AsyncImage(
-                    model = File(coverPath),
+                    model = coverImageModel(coverPath),
                     contentDescription = book.displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -1124,7 +1287,67 @@ private fun UnqueuedBookItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        },
+        trailingContent = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                TaskActionButton(
+                    onClick = onMatch
+                ) {
+                    TaskActionIcon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "匹配"
+                    )
+                }
+
+                TaskActionButton(
+                    onClick = onSkip
+                ) {
+                    TaskActionIcon(
+                        imageVector = Icons.Filled.FastForward,
+                        contentDescription = "跳过"
+                    )
+                }
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    )
+}
+
+@Composable
+private fun TaskActionButton(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onSecondaryContainer
+        ) {
+            content()
         }
+    }
+}
+
+@Composable
+private fun TaskActionIcon(
+    imageVector: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String
+) {
+    Icon(
+        imageVector = imageVector,
+        contentDescription = contentDescription,
+        modifier = Modifier.size(20.dp)
     )
 }
 
@@ -1132,28 +1355,89 @@ private fun UnqueuedBookItem(
 @Composable
 private fun TaskFilterRow(
     selected: MatchTaskFilter,
+    counts: Map<MatchTaskFilter, Int>,
     isBatchMatching: Boolean,
     onFilterChange: (MatchTaskFilter) -> Unit,
     onRetryFailedTasks: () -> Unit,
     onRetryFailedExceptNoCandidates: () -> Unit,
     onStartBatchMatch: () -> Unit
 ) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        MatchTaskFilter.entries.forEach { filter ->
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            MatchTaskFilter.entries.forEach { filter ->
+                CompositionLocalProvider(
+                    LocalMinimumInteractiveComponentSize provides 0.dp
+                ) {
+                    FilterChip(
+                        selected = selected == filter,
+                        onClick = {
+                            onFilterChange(filter)
+                        },
+                        label = {
+                            Text(
+                                text = "${matchTaskFilterLabel(filter)}(${counts[filter] ?: 0})",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        modifier = Modifier.height(28.dp)
+                    )
+                }
+            }
+        }
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
             CompositionLocalProvider(
                 LocalMinimumInteractiveComponentSize provides 0.dp
             ) {
                 FilterChip(
-                    selected = selected == filter,
-                    onClick = {
-                        onFilterChange(filter)
-                    },
+                    selected = false,
+                    onClick = onStartBatchMatch,
+                    enabled = !isBatchMatching,
                     label = {
                         Text(
-                            text = matchTaskFilterLabel(filter),
+                            text = if (isBatchMatching) "匹配中" else "匹配未匹配",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    modifier = Modifier.height(28.dp)
+                )
+            }
+
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides 0.dp
+            ) {
+                FilterChip(
+                    selected = false,
+                    onClick = onRetryFailedExceptNoCandidates,
+                    enabled = !isBatchMatching,
+                    label = {
+                        Text(
+                            text = if (isBatchMatching) "重试中" else "重试异常失败",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    modifier = Modifier.height(28.dp)
+                )
+            }
+
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides 0.dp
+            ) {
+                FilterChip(
+                    selected = false,
+                    onClick = onRetryFailedTasks,
+                    enabled = !isBatchMatching,
+                    label = {
+                        Text(
+                            text = if (isBatchMatching) "重试中" else "重试全部失败",
                             style = MaterialTheme.typography.labelSmall
                         )
                     },
@@ -1161,64 +1445,16 @@ private fun TaskFilterRow(
                 )
             }
         }
-
-        CompositionLocalProvider(
-            LocalMinimumInteractiveComponentSize provides 0.dp
-        ) {
-            FilterChip(
-                selected = false,
-                onClick = onStartBatchMatch,
-                enabled = !isBatchMatching,
-                label = {
-                    Text(
-                        text = if (isBatchMatching) "匹配中" else "匹配未匹配",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                },
-                modifier = Modifier.height(28.dp)
-            )
-        }
-
-        CompositionLocalProvider(
-            LocalMinimumInteractiveComponentSize provides 0.dp
-        ) {
-            FilterChip(
-                selected = false,
-                onClick = onRetryFailedExceptNoCandidates,
-                enabled = !isBatchMatching,
-                label = {
-                    Text(
-                        text = if (isBatchMatching) "重试中" else "重试异常失败",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                },
-                modifier = Modifier.height(28.dp)
-            )
-        }
-
-        CompositionLocalProvider(
-            LocalMinimumInteractiveComponentSize provides 0.dp
-        ) {
-            FilterChip(
-                selected = false,
-                onClick = onRetryFailedTasks,
-                enabled = !isBatchMatching,
-                label = {
-                    Text(
-                        text = if (isBatchMatching) "重试中" else "重试全部失败",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                },
-                modifier = Modifier.height(28.dp)
-            )
-        }
     }
 }
 
 @Composable
 private fun MatchTaskItem(
     task: MatchTaskEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onSkip: (() -> Unit)?,
+    onRetry: (() -> Unit)?,
+    onCancelSkipped: (() -> Unit)?
 ) {
     ListItem(
         leadingContent = {
@@ -1226,7 +1462,7 @@ private fun MatchTaskItem(
 
             if (coverPath != null) {
                 AsyncImage(
-                    model = File(coverPath),
+                    model = coverImageModel(coverPath),
                     contentDescription = task.displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -1289,6 +1525,53 @@ private fun MatchTaskItem(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        },
+        trailingContent = when {
+            onRetry != null || onSkip != null -> {
+                {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (onRetry != null) {
+                            TaskActionButton(
+                                onClick = onRetry
+                            ) {
+                                TaskActionIcon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = "重试"
+                                )
+                            }
+                        }
+
+                        if (onSkip != null) {
+                            TaskActionButton(
+                                onClick = onSkip
+                            ) {
+                                TaskActionIcon(
+                                    imageVector = Icons.Filled.FastForward,
+                                    contentDescription = "跳过"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            onCancelSkipped != null -> {
+                {
+                    TaskActionButton(
+                        onClick = onCancelSkipped
+                    ) {
+                        TaskActionIcon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "取消跳过"
+                        )
+                    }
+                }
+            }
+
+            else -> null
         },
         modifier = Modifier
             .fillMaxWidth()
@@ -1375,6 +1658,8 @@ private fun BookShelfContent(
     books: List<BookItem>,
     layoutMode: LibraryLayoutMode,
     gridColumns: Int,
+    listState: LazyListState,
+    gridState: LazyGridState,
     showRematchButtonInLibrary: Boolean,
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
@@ -1388,6 +1673,7 @@ private fun BookShelfContent(
         LibraryLayoutMode.List -> {
             BookList(
                 books = books,
+                listState = listState,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
@@ -1397,6 +1683,7 @@ private fun BookShelfContent(
         LibraryLayoutMode.Grid -> {
             BookGrid(
                 books = books,
+                gridState = gridState,
                 gridColumns = gridColumns,
                 onOpenBook = onOpenBook
             )
@@ -1407,10 +1694,12 @@ private fun BookShelfContent(
 @Composable
 private fun BookGrid(
     books: List<BookItem>,
+    gridState: LazyGridState,
     gridColumns: Int,
     onOpenBook: (BookItem) -> Unit
 ) {
     LazyVerticalGrid(
+        state = gridState,
         columns = GridCells.Fixed(gridColumns.coerceIn(2, 6)),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -1453,7 +1742,7 @@ private fun GridBookCoverItem(
 
         if (coverPath != null) {
             AsyncImage(
-                model = File(coverPath),
+                model = coverImageModel(coverPath),
                 contentDescription = book.displayName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

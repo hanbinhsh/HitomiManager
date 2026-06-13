@@ -60,6 +60,20 @@ interface BookDao {
 
     @Query(
         """
+    UPDATE book
+    SET coverFilePath = :coverFilePath,
+        updatedAt = :updatedAt
+    WHERE uriString = :uriString
+    """
+    )
+    suspend fun updateCoverFilePath(
+        uriString: String,
+        coverFilePath: String,
+        updatedAt: Long
+    )
+
+    @Query(
+        """
     SELECT book.*
     FROM book
     INNER JOIN book_tag ON book.uriString = book_tag.bookUriString
@@ -141,6 +155,40 @@ interface BookDao {
     fun observeUnqueuedUnmatchedBooks(
         libraryRootUriString: String
     ): Flow<List<BookEntity>>
+
+    @Query(
+        """
+    SELECT COUNT(*)
+    FROM book
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM match_task
+          WHERE match_task.bookUriString = book.uriString
+      )
+    """
+    )
+    fun observeUnqueuedUnmatchedBookCount(
+        libraryRootUriString: String
+    ): Flow<Int>
+
+    @Query(
+        """
+    SELECT COUNT(*)
+    FROM book
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM match_task
+          WHERE match_task.bookUriString = book.uriString
+      )
+    """
+    )
+    suspend fun countUnqueuedUnmatchedBooks(
+        libraryRootUriString: String
+    ): Int
 
     @Query(
         """

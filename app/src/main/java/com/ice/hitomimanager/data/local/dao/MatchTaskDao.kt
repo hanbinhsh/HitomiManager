@@ -9,6 +9,11 @@ import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import kotlinx.coroutines.flow.Flow
 
+data class MatchTaskStatusCount(
+    val status: String,
+    val count: Int
+)
+
 @Dao
 interface MatchTaskDao {
 
@@ -17,7 +22,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
-    ORDER BY updatedAt DESC
+    ORDER BY updatedAt DESC, id DESC
     """
     )
     fun observeTasks(
@@ -30,13 +35,37 @@ interface MatchTaskDao {
     FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
       AND status IN (:statuses)
-    ORDER BY updatedAt DESC
+    ORDER BY updatedAt DESC, id DESC
     """
     )
     fun observeTasksByStatuses(
         libraryRootUriString: String,
         statuses: List<String>
     ): Flow<List<MatchTaskEntity>>
+
+    @Query(
+        """
+    SELECT status, COUNT(*) AS count
+    FROM match_task
+    WHERE libraryRootUriString = :libraryRootUriString
+    GROUP BY status
+    """
+    )
+    fun observeStatusCounts(
+        libraryRootUriString: String
+    ): Flow<List<MatchTaskStatusCount>>
+
+    @Query(
+        """
+    SELECT status, COUNT(*) AS count
+    FROM match_task
+    WHERE libraryRootUriString = :libraryRootUriString
+    GROUP BY status
+    """
+    )
+    suspend fun getStatusCounts(
+        libraryRootUriString: String
+    ): List<MatchTaskStatusCount>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: MatchTaskEntity): Long
@@ -46,6 +75,9 @@ interface MatchTaskDao {
 
     @Query("SELECT * FROM match_task WHERE id = :taskId LIMIT 1")
     suspend fun getTask(taskId: Long): MatchTaskEntity?
+
+    @Query("DELETE FROM match_task WHERE id = :taskId")
+    suspend fun deleteTask(taskId: Long)
 
     @Query("DELETE FROM match_candidate WHERE taskId = :taskId")
     suspend fun deleteCandidatesForTask(taskId: Long)
@@ -86,7 +118,7 @@ interface MatchTaskDao {
     FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
       AND status IN (:statuses)
-    ORDER BY updatedAt DESC
+    ORDER BY updatedAt DESC, id DESC
     """
     )
     suspend fun getTasksByStatuses(
@@ -100,12 +132,33 @@ interface MatchTaskDao {
     FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
       AND status = :status
-      AND id != :currentTaskId
-    ORDER BY updatedAt DESC
+      AND (
+          updatedAt < :currentUpdatedAt
+          OR (updatedAt = :currentUpdatedAt AND id < :currentTaskId)
+      )
+    ORDER BY updatedAt DESC, id DESC
     LIMIT 1
     """
     )
-    suspend fun getNextTaskByStatus(
+    suspend fun getNextTaskByStatusAfterCursor(
+        libraryRootUriString: String,
+        status: String,
+        currentTaskId: Long,
+        currentUpdatedAt: Long
+    ): MatchTaskEntity?
+
+    @Query(
+        """
+    SELECT *
+    FROM match_task
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND status = :status
+      AND id != :currentTaskId
+    ORDER BY updatedAt DESC, id DESC
+    LIMIT 1
+    """
+    )
+    suspend fun getFirstTaskByStatus(
         libraryRootUriString: String,
         status: String,
         currentTaskId: Long
@@ -116,7 +169,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE bookUriString = :bookUriString
-    ORDER BY updatedAt DESC
+    ORDER BY updatedAt DESC, id DESC
     """
     )
     suspend fun getTasksByBookUri(
@@ -158,6 +211,20 @@ interface MatchTaskDao {
         libraryRootUriString: String,
         displayName: String,
         coverFilePath: String?,
+        updatedAt: Long
+    )
+
+    @Query(
+        """
+    UPDATE match_task
+    SET coverFilePath = :coverFilePath,
+        updatedAt = :updatedAt
+    WHERE bookUriString = :bookUriString
+    """
+    )
+    suspend fun updateCoverFilePathForBook(
+        bookUriString: String,
+        coverFilePath: String,
         updatedAt: Long
     )
 }

@@ -21,6 +21,7 @@ private object Routes {
     const val Match = "match"
     const val Settings = "settings"
     const val MatchTaskDetail = "match_task_detail"
+    const val HitomiWebView = "hitomi_web_view"
 }
 
 @Composable
@@ -33,6 +34,7 @@ fun AppRoot(
     val detailState by viewModel.bookDetailState.collectAsState()
     val readerState by viewModel.readerState.collectAsState()
     val matchState by viewModel.matchState.collectAsState()
+    val hitomiWebViewState by viewModel.hitomiWebViewState.collectAsState()
     val settingsState by viewModel.settingsState.collectAsState()
     val matchTaskDetailState by viewModel.matchTaskDetailState.collectAsState()
 
@@ -83,6 +85,10 @@ fun AppRoot(
                 showRematchButtonInLibrary = settingsState.showRematchButtonInLibrary,
                 onRetryFailedExceptNoCandidates = viewModel::retryFailedMatchTasksExceptNoCandidates,
                 onStartBatchMatch = viewModel::startBatchMatchUnmatched,
+                onSkipMatchTask = viewModel::skipMatchTaskFromList,
+                onCancelSkippedMatchTask = viewModel::cancelSkippedMatchTask,
+                onSkipUnqueuedBook = viewModel::skipUnqueuedBook,
+                onRetryMatchTask = viewModel::retryFailedMatchTask,
                 libraryLayoutMode = settingsState.libraryLayoutMode,
                 libraryGridColumns = settingsState.libraryGridColumns,
                 onToggleLibraryLayoutMode = viewModel::toggleLibraryLayoutMode,
@@ -154,6 +160,12 @@ fun AppRoot(
                 onQueryChange = viewModel::updateMatchQuery,
                 onSearch = viewModel::searchMatch,
                 onIdMatch = viewModel::matchById,
+                onOpenSearchWebView = {
+                    if (viewModel.openHitomiSearchWebView()) {
+                        navController.navigate(Routes.HitomiWebView)
+                    }
+                },
+                onToggleSearchDiagnosticRaw = viewModel::toggleSearchDiagnosticRaw,
                 onRead = {
                     val book = matchState.book
                     if (book != null) {
@@ -163,6 +175,15 @@ fun AppRoot(
                 },
                 onBind = { meta ->
                     viewModel.bindMatch(meta)
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable(Routes.HitomiWebView) {
+            HitomiWebViewScreen(
+                state = hitomiWebViewState,
+                onBack = {
                     navController.popBackStack()
                 }
             )
@@ -187,8 +208,13 @@ fun AppRoot(
                 onAutoOpenNextReviewTaskChange = viewModel::setAutoOpenNextReviewTask,
                 onStartBatchMatch = viewModel::startBatchMatchUnmatched,
                 onClearDatabase = viewModel::clearDatabase,
+                onExportDatabasePicked = viewModel::exportDatabase,
+                onImportDatabasePicked = viewModel::importDatabase,
                 onShowRematchButtonInLibraryChange = viewModel::setShowRematchButtonInLibrary,
                 onLibraryGridColumnsChange = viewModel::setLibraryGridColumns,
+                onFilteredMatchLanguagesChange = viewModel::setFilteredMatchLanguages,
+                onMatchSearchTimeoutSecondsChange = viewModel::setMatchSearchTimeoutSeconds,
+                onBatchMatchThreadsChange = viewModel::setBatchMatchThreads,
                 onOpenTasks = {
                     viewModel.setHomeTab(HomeTab.Tasks)
                     navController.popBackStack()
