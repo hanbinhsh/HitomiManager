@@ -25,5 +25,7 @@ enum class TagFilterTab {
     Artist,
     Group,
     Series,
-    Character
+    Character,
+    Language,
+    Type
 }

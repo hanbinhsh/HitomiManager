@@ -28,8 +28,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -55,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.ice.hitomimanager.LibraryUiState
 import com.ice.hitomimanager.data.model.BookItem
+import com.ice.hitomimanager.data.model.BookSortMode
 import com.ice.hitomimanager.data.model.HomeTab
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
@@ -116,6 +120,7 @@ fun LibraryScreen(
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
     onToggleLibraryLayoutMode: () -> Unit,
+    onBookSortModeChange: (BookSortMode) -> Unit,
     onTagFilterTabChange: (TagFilterTab) -> Unit,
 ) {
     val libraryListState = rememberLazyListState()
@@ -124,6 +129,9 @@ fun LibraryScreen(
     val searchListState = rememberLazyListState()
     val searchGridState = rememberLazyGridState()
     val taskListState = rememberLazyListState()
+    var sortMenuExpanded by remember {
+        mutableStateOf(false)
+    }
 
     suspend fun scrollTabToTop(tab: HomeTab) {
         when (tab) {
@@ -166,6 +174,44 @@ fun LibraryScreen(
                     Text("Hitomi Manager")
                 },
                 actions = {
+                    Box {
+                        IconButton(
+                            onClick = {
+                                sortMenuExpanded = true
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Sort,
+                                contentDescription = "排序"
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = sortMenuExpanded,
+                            onDismissRequest = {
+                                sortMenuExpanded = false
+                            }
+                        ) {
+                            BookSortMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (state.bookSortMode == mode) {
+                                                "✓ ${bookSortModeLabel(mode)}"
+                                            } else {
+                                                bookSortModeLabel(mode)
+                                            }
+                                        )
+                                    },
+                                    onClick = {
+                                        sortMenuExpanded = false
+                                        onBookSortModeChange(mode)
+                                    }
+                                )
+                            }
+                        }
+                    }
+
                     IconButton(
                         onClick = onToggleLibraryLayoutMode
                     ) {
@@ -830,6 +876,8 @@ private fun namespaceTitle(namespace: String): String {
         "group" -> "社团"
         "series" -> "系列"
         "character" -> "角色"
+        "language" -> "语言"
+        "type" -> "类型"
         "female" -> "女性标签"
         "male" -> "男性标签"
         else -> namespace
@@ -845,6 +893,8 @@ private fun tagFilterTabLabel(
         TagFilterTab.Group -> "社团"
         TagFilterTab.Series -> "系列"
         TagFilterTab.Character -> "角色"
+        TagFilterTab.Language -> "语言"
+        TagFilterTab.Type -> "类型"
     }
 }
 
@@ -857,12 +907,16 @@ private fun tagBelongsToFilterTab(
         TagFilterTab.Group -> namespace == "group"
         TagFilterTab.Series -> namespace == "series"
         TagFilterTab.Character -> namespace == "character"
+        TagFilterTab.Language -> namespace == "language"
+        TagFilterTab.Type -> namespace == "type"
 
         TagFilterTab.Tag -> namespace !in setOf(
             "artist",
             "group",
             "series",
-            "character"
+            "character",
+            "language",
+            "type"
         )
     }
 }
@@ -1604,6 +1658,19 @@ private fun matchTaskStatusLabel(
         MatchTaskStatus.Failed -> "失败"
         MatchTaskStatus.Skipped -> "跳过"
         else -> status
+    }
+}
+
+private fun bookSortModeLabel(
+    mode: BookSortMode
+): String {
+    return when (mode) {
+        BookSortMode.NameAsc -> "名称 A-Z"
+        BookSortMode.NameDesc -> "名称 Z-A"
+        BookSortMode.FileTimeDesc -> "修改时间 新到旧"
+        BookSortMode.FileTimeAsc -> "修改时间 旧到新"
+        BookSortMode.PageCountDesc -> "页数 多到少"
+        BookSortMode.PageCountAsc -> "页数 少到多"
     }
 }
 

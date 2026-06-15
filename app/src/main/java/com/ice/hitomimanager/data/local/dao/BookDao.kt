@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
 import com.ice.hitomimanager.data.local.entity.BookEntity
+import com.ice.hitomimanager.data.model.TagCountItem
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -20,6 +21,44 @@ interface BookDao {
     fun observeBooks(
         libraryRootUriString: String
     ): Flow<List<BookEntity>>
+
+    @Query(
+        """
+    SELECT
+        'language:' || lower(language) AS tagKey,
+        'language' AS namespace,
+        language AS name,
+        NULL AS translatedName,
+        COUNT(*) AS bookCount
+    FROM book
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND language IS NOT NULL
+      AND language != ''
+    GROUP BY lower(language), language
+    """
+    )
+    fun observeLanguageFacetCounts(
+        libraryRootUriString: String
+    ): Flow<List<TagCountItem>>
+
+    @Query(
+        """
+    SELECT
+        'type:' || lower(type) AS tagKey,
+        'type' AS namespace,
+        type AS name,
+        NULL AS translatedName,
+        COUNT(*) AS bookCount
+    FROM book
+    WHERE libraryRootUriString = :libraryRootUriString
+      AND type IS NOT NULL
+      AND type != ''
+    GROUP BY lower(type), type
+    """
+    )
+    fun observeTypeFacetCounts(
+        libraryRootUriString: String
+    ): Flow<List<TagCountItem>>
 
     @Query("SELECT * FROM book WHERE uriString = :uriString LIMIT 1")
     suspend fun findByUri(uriString: String): BookEntity?

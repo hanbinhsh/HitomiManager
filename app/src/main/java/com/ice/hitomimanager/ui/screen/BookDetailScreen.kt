@@ -195,7 +195,10 @@ fun BookDetailScreen(
                 }
             }
 
-            InfoSection(book)
+            InfoSection(
+                book = book,
+                onTagClick = onTagClick
+            )
 
             MetadataGroupSection(
                 title = "作者",
@@ -231,7 +234,9 @@ fun BookDetailScreen(
                     it.namespace != "artist" &&
                             it.namespace != "group" &&
                             it.namespace != "series" &&
-                            it.namespace != "character"
+                            it.namespace != "character" &&
+                            it.namespace != "language" &&
+                            it.namespace != "type"
                 },
                 showTagNamespacePrefix = showTagNamespacePrefix,
                 onTagClick = onTagClick
@@ -312,7 +317,8 @@ private fun HeaderCard(
 
 @Composable
 private fun InfoSection(
-    book: BookItem
+    book: BookItem,
+    onTagClick: (TagEntity) -> Unit
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth()
@@ -328,8 +334,18 @@ private fun InfoSection(
 
             InfoLine("匹配状态", book.matchStatus)
             InfoLine("Gallery ID", book.sourceGalleryId ?: "未匹配")
-            InfoLine("语言", book.language ?: "未知")
-            InfoLine("类型", book.type ?: "未知")
+            InfoFacetLine(
+                label = "语言",
+                namespace = "language",
+                value = book.language,
+                onTagClick = onTagClick
+            )
+            InfoFacetLine(
+                label = "类型",
+                namespace = "type",
+                value = book.type,
+                onTagClick = onTagClick
+            )
             InfoLine("页数", book.pageCount?.toString() ?: "未知")
         }
     }
@@ -353,6 +369,57 @@ private fun InfoLine(
             text = value,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+@Composable
+private fun InfoFacetLine(
+    label: String,
+    namespace: String,
+    value: String?,
+    onTagClick: (TagEntity) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "$label：",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(90.dp)
+        )
+
+        if (value.isNullOrBlank()) {
+            Text(
+                text = "未知",
+                modifier = Modifier.weight(1f)
+            )
+        } else {
+            CompositionLocalProvider(
+                LocalMinimumInteractiveComponentSize provides 0.dp
+            ) {
+                AssistChip(
+                    onClick = {
+                        onTagClick(
+                            TagEntity(
+                                key = "${namespace.lowercase()}:${value.lowercase()}",
+                                namespace = namespace,
+                                name = value
+                            )
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = value,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.height(CompactTagChipHeight)
+                )
+            }
+        }
     }
 }
 

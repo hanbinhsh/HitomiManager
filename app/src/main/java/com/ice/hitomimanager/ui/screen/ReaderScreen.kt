@@ -7,20 +7,32 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,11 +44,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,8 +60,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.github.panpf.zoomimage.CoilZoomAsyncImage
+import coil3.compose.AsyncImage
 import com.ice.hitomimanager.ReaderUiState
 import com.ice.hitomimanager.data.model.PageInfo
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -56,6 +73,7 @@ fun ReaderScreen(
     state: ReaderUiState,
     onBack: () -> Unit,
     onPageChanged: (Int) -> Unit,
+    onPagePreviewRequested: (Int) -> Unit,
     onBackToDetail: () -> Unit
 ) {
     val imagePageCount = state.pages.size
@@ -68,8 +86,13 @@ fun ReaderScreen(
         mutableStateOf(false)
     }
 
+    var readerMode by rememberSaveable {
+        mutableStateOf(ReaderMode.Page)
+    }
+    val readerScope = rememberCoroutineScope()
+
     ReaderSystemBars(
-        visible = controlsVisible
+        visible = controlsVisible || readerMode == ReaderMode.Grid
     )
 
     val pagerState = rememberPagerState(
@@ -82,6 +105,8 @@ fun ReaderScreen(
     LaunchedEffect(state.book?.uriString, imagePageCount) {
         if (imagePageCount > 0) {
             backRequested = false
+            readerMode = ReaderMode.Page
+            controlsVisible = true
             pagerState.scrollToPage(1)
             onPageChanged(0)
         }
@@ -126,6 +151,23 @@ fun ReaderScreen(
                     text = state.error,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            imagePageCount > 0 && readerMode == ReaderMode.Grid -> {
+                ReaderGridContent(
+                    state = state,
+                    currentPage = currentImagePage,
+                    onPagePreviewRequested = onPagePreviewRequested,
+                    onPageClick = { index ->
+                        readerScope.launch {
+                            onPageChanged(index)
+                            readerMode = ReaderMode.Page
+                            controlsVisible = true
+                            pagerState.scrollToPage(index + 1)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 
@@ -177,7 +219,7 @@ fun ReaderScreen(
         }
 
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = controlsVisible || readerMode == ReaderMode.Grid,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter)
@@ -185,12 +227,21 @@ fun ReaderScreen(
             ReaderTopBar(
                 pageInfo = currentInfo,
                 fallbackName = state.pages.getOrNull(currentImagePage),
-                onBack = onBack
+                mode = readerMode,
+                onBack = onBack,
+                onToggleMode = {
+                    readerMode = if (readerMode == ReaderMode.Page) {
+                        controlsVisible = true
+                        ReaderMode.Grid
+                    } else {
+                        ReaderMode.Page
+                    }
+                }
             )
         }
 
         AnimatedVisibility(
-            visible = controlsVisible && imagePageCount > 0,
+            visible = (controlsVisible || readerMode == ReaderMode.Grid) && imagePageCount > 0,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -203,11 +254,18 @@ fun ReaderScreen(
     }
 }
 
+private enum class ReaderMode {
+    Page,
+    Grid
+}
+
 @Composable
 private fun ReaderTopBar(
     pageInfo: PageInfo?,
     fallbackName: String?,
-    onBack: () -> Unit
+    mode: ReaderMode,
+    onBack: () -> Unit,
+    onToggleMode: () -> Unit
 ) {
     val imageName = remember(pageInfo, fallbackName) {
         pageInfo?.entryName
@@ -244,7 +302,7 @@ private fun ReaderTopBar(
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(start = 56.dp, end = 16.dp),
+                .padding(start = 56.dp, end = 56.dp),
             verticalArrangement = Arrangement.Center
         ) {
             Text(
@@ -260,6 +318,140 @@ private fun ReaderTopBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        IconButton(
+            onClick = onToggleMode,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Icon(
+                imageVector = if (mode == ReaderMode.Page) {
+                    Icons.Filled.GridView
+                } else {
+                    Icons.Filled.ViewCarousel
+                },
+                contentDescription = if (mode == ReaderMode.Page) {
+                    "网格浏览"
+                } else {
+                    "大图浏览"
+                },
+                tint = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReaderGridContent(
+    state: ReaderUiState,
+    currentPage: Int,
+    onPagePreviewRequested: (Int) -> Unit,
+    onPageClick: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val gridState = rememberLazyGridState(
+        initialFirstVisibleItemIndex = currentPage.coerceAtLeast(0)
+    )
+
+    LazyVerticalGrid(
+        state = gridState,
+        columns = GridCells.Adaptive(minSize = 112.dp),
+        modifier = modifier
+            .background(Color.Black)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars),
+        contentPadding = PaddingValues(
+            start = 8.dp,
+            top = 80.dp,
+            end = 8.dp,
+            bottom = 72.dp
+        ),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        itemsIndexed(
+            items = state.pages,
+            key = { index, name -> "$index:$name" }
+        ) { index, pageName ->
+            ReaderGridPageItem(
+                index = index,
+                pageName = pageName,
+                imageFile = state.pageFiles[index],
+                loading = index in state.loadingPageIndices,
+                selected = index == currentPage,
+                onPagePreviewRequested = onPagePreviewRequested,
+                onPageClick = onPageClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReaderGridPageItem(
+    index: Int,
+    pageName: String,
+    imageFile: java.io.File?,
+    loading: Boolean,
+    selected: Boolean,
+    onPagePreviewRequested: (Int) -> Unit,
+    onPageClick: (Int) -> Unit
+) {
+    LaunchedEffect(index) {
+        onPagePreviewRequested(index)
+    }
+
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.White.copy(alpha = 0.12f)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(0.7f)
+            .clip(RoundedCornerShape(6.dp))
+            .border(
+                width = if (selected) 3.dp else 1.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(6.dp)
+            )
+            .background(Color.White.copy(alpha = 0.08f))
+            .clickable {
+                onPageClick(index)
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageFile != null) {
+            AsyncImage(
+                model = imageFile,
+                contentDescription = pageName,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                color = Color.White
+            )
+        } else {
+            Text(
+                text = "${index + 1}",
+                color = Color.White.copy(alpha = 0.72f)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .background(Color.Black.copy(alpha = 0.68f))
+                .padding(horizontal = 6.dp, vertical = 3.dp)
+        ) {
+            Text(
+                text = "${index + 1}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
             )
         }
     }

@@ -92,6 +92,7 @@ fun AppRoot(
                 libraryLayoutMode = settingsState.libraryLayoutMode,
                 libraryGridColumns = settingsState.libraryGridColumns,
                 onToggleLibraryLayoutMode = viewModel::toggleLibraryLayoutMode,
+                onBookSortModeChange = viewModel::setBookSortMode,
                 onTagFilterTabChange = viewModel::setTagFilterTab,
                 onOpenMatchTask = { task ->
                     if (task.status == MatchTaskStatus.Failed) {
@@ -145,6 +146,7 @@ fun AppRoot(
                     navController.popBackStack()
                 },
                 onPageChanged = viewModel::onReaderPageChanged,
+                onPagePreviewRequested = viewModel::ensureReaderPageLoaded,
                 onBackToDetail = {
                     navController.popBackStack()
                 }

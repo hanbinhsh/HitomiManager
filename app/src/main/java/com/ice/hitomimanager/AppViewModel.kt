@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import com.ice.hitomimanager.data.model.BookItem
+import com.ice.hitomimanager.data.model.BookSortMode
 import com.ice.hitomimanager.data.model.PageInfo
 import com.ice.hitomimanager.domain.reader.ComicArchiveReader
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +40,7 @@ import java.util.Locale
 data class LibraryUiState(
     val folderUriString: String? = null,
     val books: List<BookItem> = emptyList(),
+    val bookSortMode: BookSortMode = BookSortMode.NameAsc,
 
     val homeTab: HomeTab = HomeTab.Library,
     val homeTabReselectTick: Long = 0L,
@@ -176,7 +178,8 @@ class AppViewModel(
 
     private val _libraryState = MutableStateFlow(
         LibraryUiState(
-            folderUriString = prefs.getString(KEY_FOLDER_URI, null)
+            folderUriString = prefs.getString(KEY_FOLDER_URI, null),
+            bookSortMode = readBookSortMode()
         )
     )
     val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
@@ -453,11 +456,96 @@ class AppViewModel(
             }
 
             flow.collectLatest { books ->
-                _libraryState.update {
-                    it.copy(books = books)
+                _libraryState.update { state ->
+                    state.copy(
+                        books = sortBooks(
+                            books = books,
+                            mode = state.bookSortMode
+                        )
+                    )
                 }
                 repairMissingCovers(books)
             }
+        }
+    }
+
+    private fun readBookSortMode(): BookSortMode {
+        return runCatching {
+            BookSortMode.valueOf(
+                prefs.getString(KEY_BOOK_SORT_MODE, BookSortMode.NameAsc.name)
+                    ?: BookSortMode.NameAsc.name
+            )
+        }.getOrDefault(BookSortMode.NameAsc)
+    }
+
+    private fun sortBooks(
+        books: List<BookItem>,
+        mode: BookSortMode
+    ): List<BookItem> {
+        fun displayName(book: BookItem): String {
+            return book.displayName.lowercase(Locale.getDefault())
+        }
+
+        return when (mode) {
+            BookSortMode.NameAsc -> {
+                books.sortedWith(
+                    compareBy<BookItem> { displayName(it) }
+                        .thenBy { it.uriString }
+                )
+            }
+
+            BookSortMode.NameDesc -> {
+                books.sortedWith(
+                    compareByDescending<BookItem> { displayName(it) }
+                        .thenBy { it.uriString }
+                )
+            }
+
+            BookSortMode.FileTimeDesc -> {
+                books.sortedWith(
+                    compareByDescending<BookItem> { it.lastModified }
+                        .thenBy { displayName(it) }
+                )
+            }
+
+            BookSortMode.FileTimeAsc -> {
+                books.sortedWith(
+                    compareBy<BookItem> { it.lastModified }
+                        .thenBy { displayName(it) }
+                )
+            }
+
+            BookSortMode.PageCountDesc -> {
+                books.sortedWith(
+                    compareBy<BookItem> { it.pageCount == null }
+                        .thenByDescending { it.pageCount ?: 0 }
+                        .thenBy { displayName(it) }
+                )
+            }
+
+            BookSortMode.PageCountAsc -> {
+                books.sortedWith(
+                    compareBy<BookItem> { it.pageCount == null }
+                        .thenBy { it.pageCount ?: Int.MAX_VALUE }
+                        .thenBy { displayName(it) }
+                )
+            }
+        }
+    }
+
+    fun setBookSortMode(mode: BookSortMode) {
+        prefs.edit()
+            .putString(KEY_BOOK_SORT_MODE, mode.name)
+            .apply()
+
+        _libraryState.update { state ->
+            state.copy(
+                bookSortMode = mode,
+                books = sortBooks(
+                    books = state.books,
+                    mode = mode
+                )
+            )
         }
     }
 
@@ -2113,6 +2201,10 @@ class AppViewModel(
         preloadAround(index)
     }
 
+    fun ensureReaderPageLoaded(index: Int) {
+        ensurePageLoaded(index)
+    }
+
     private fun scanFolder(uri: Uri) {
         viewModelScope.launch {
             _libraryState.update {
@@ -2463,6 +2555,7 @@ class AppViewModel(
         private const val KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY = "show_rematch_button_in_library"
         private const val KEY_LIBRARY_LAYOUT_MODE = "library_layout_mode"
         private const val KEY_LIBRARY_GRID_COLUMNS = "library_grid_columns"
+        private const val KEY_BOOK_SORT_MODE = "book_sort_mode"
         private const val KEY_FILTERED_MATCH_LANGUAGES = "filtered_match_languages"
         private const val KEY_MATCH_SEARCH_TIMEOUT_SECONDS = "match_search_timeout_seconds"
         private const val DEFAULT_MATCH_SEARCH_TIMEOUT_SECONDS = 30

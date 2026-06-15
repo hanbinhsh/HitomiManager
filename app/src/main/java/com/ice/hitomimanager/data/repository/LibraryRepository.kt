@@ -325,7 +325,17 @@ class LibraryRepository(
     fun observeTagCounts(
         libraryRootUriString: String
     ): Flow<List<TagCountItem>> {
-        return tagDao.observeTagCounts(libraryRootUriString)
+        return combine(
+            tagDao.observeTagCounts(libraryRootUriString),
+            bookDao.observeLanguageFacetCounts(libraryRootUriString),
+            bookDao.observeTypeFacetCounts(libraryRootUriString)
+        ) { tagCounts, languageCounts, typeCounts ->
+            val normalTags = tagCounts.filterNot {
+                it.namespace == "language" || it.namespace == "type"
+            }
+
+            normalTags + languageCounts + typeCounts
+        }
     }
 
     fun observeBooksByAllTags(
@@ -336,12 +346,56 @@ class LibraryRepository(
             return observeBooks(libraryRootUriString)
         }
 
-        return bookDao.observeBooksByAllTags(
-            libraryRootUriString = libraryRootUriString,
-            tagKeys = tagKeys,
-            tagCount = tagKeys.size
-        ).map { list ->
-            list.map { it.toBookItem() }
+        val facetKeys = tagKeys.filter { isFacetTagKey(it) }
+        val normalTagKeys = tagKeys.filterNot { isFacetTagKey(it) }
+
+        val baseFlow = if (normalTagKeys.isEmpty()) {
+            observeBooks(libraryRootUriString)
+        } else {
+            bookDao.observeBooksByAllTags(
+                libraryRootUriString = libraryRootUriString,
+                tagKeys = normalTagKeys,
+                tagCount = normalTagKeys.size
+            ).map { list ->
+                list.map { it.toBookItem() }
+            }
+        }
+
+        return baseFlow.map { books ->
+            books.filter { book ->
+                facetKeys.all { key ->
+                    bookMatchesFacetKey(book, key)
+                }
+            }
+        }
+    }
+
+    private fun isFacetTagKey(key: String): Boolean {
+        return key.startsWith("language:") || key.startsWith("type:")
+    }
+
+    private fun bookMatchesFacetKey(
+        book: BookItem,
+        key: String
+    ): Boolean {
+        val normalizedKey = key.lowercase()
+
+        return when {
+            normalizedKey.startsWith("language:") -> {
+                makeTagKey(
+                    namespace = "language",
+                    name = book.language.orEmpty()
+                ) == normalizedKey
+            }
+
+            normalizedKey.startsWith("type:") -> {
+                makeTagKey(
+                    namespace = "type",
+                    name = book.type.orEmpty()
+                ) == normalizedKey
+            }
+
+            else -> true
         }
     }
 
@@ -531,6 +585,8 @@ class LibraryRepository(
         )
 
         val extraTags = buildList {
+            meta.language?.takeIf { it.isNotBlank() }?.let { add("language" to it) }
+            meta.type?.takeIf { it.isNotBlank() }?.let { add("type" to it) }
             meta.artists.forEach { add("artist" to it) }
             meta.groups.forEach { add("group" to it) }
             meta.series.forEach { add("series" to it) }
