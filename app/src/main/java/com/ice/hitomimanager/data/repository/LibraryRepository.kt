@@ -443,12 +443,24 @@ class LibraryRepository(
                 val oldBySameUri = bookDao.findByUri(scanned.uriString)
 
                 if (oldBySameUri != null) {
+                    val coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath
+
+                    if (
+                        oldBySameUri.libraryRootUriString == rootUriString &&
+                        oldBySameUri.displayName == scanned.displayName &&
+                        oldBySameUri.fileSize == scanned.fileSize &&
+                        oldBySameUri.lastModified == scanned.lastModified &&
+                        oldBySameUri.coverFilePath == coverFilePath
+                    ) {
+                        return@withTransaction
+                    }
+
                     val entity = oldBySameUri.copy(
                         libraryRootUriString = rootUriString,
                         displayName = scanned.displayName,
                         fileSize = scanned.fileSize,
                         lastModified = scanned.lastModified,
-                        coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath,
+                        coverFilePath = coverFilePath,
                         updatedAt = now
                     )
 

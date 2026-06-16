@@ -91,6 +91,7 @@ import androidx.compose.material3.TabRow
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.TagFilterTab
 import androidx.compose.material3.Tab
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,6 +133,9 @@ fun LibraryScreen(
     var sortMenuExpanded by remember {
         mutableStateOf(false)
     }
+    var observedBookSortMode by remember {
+        mutableStateOf(state.bookSortMode)
+    }
 
     suspend fun scrollTabToTop(tab: HomeTab) {
         when (tab) {
@@ -164,6 +168,15 @@ fun LibraryScreen(
     LaunchedEffect(state.homeTabReselectTick) {
         if (state.homeTabReselectTick > 0L) {
             scrollTabToTop(state.homeTab)
+        }
+    }
+
+    LaunchedEffect(state.bookSortMode) {
+        if (state.bookSortMode != observedBookSortMode) {
+            observedBookSortMode = state.bookSortMode
+            if (state.homeTab == HomeTab.Library || state.homeTab == HomeTab.Search) {
+                scrollTabToTop(state.homeTab)
+            }
         }
     }
 
@@ -531,20 +544,50 @@ private fun TagFilterContent(
             )
         }
     }
-
-    var visibleLimit by remember(
+    var renderedTagLimit by remember(
         state.tagFilterTab,
         state.tagSortMode,
         showTagNamespacePrefix
     ) {
-        mutableStateOf(TagPageSize)
+        mutableStateOf(0)
+    }
+    var isPreparingTags by remember(
+        state.tagFilterTab,
+        state.tagSortMode,
+        showTagNamespacePrefix
+    ) {
+        mutableStateOf(false)
+    }
+    val renderedTags = remember(
+        visibleTags,
+        renderedTagLimit
+    ) {
+        visibleTags.take(renderedTagLimit.coerceAtMost(visibleTags.size))
     }
 
-    val shownTags = remember(
+    LaunchedEffect(
         visibleTags,
-        visibleLimit
+        state.tagFilterTab,
+        state.tagSortMode,
+        showTagNamespacePrefix
     ) {
-        visibleTags.take(visibleLimit)
+        renderedTagLimit = 0
+        isPreparingTags = visibleTags.isNotEmpty()
+
+        if (visibleTags.isEmpty()) {
+            isPreparingTags = false
+            return@LaunchedEffect
+        }
+
+        delay(80)
+        renderedTagLimit = TagInitialRenderCount.coerceAtMost(visibleTags.size)
+        isPreparingTags = false
+
+        while (renderedTagLimit < visibleTags.size) {
+            delay(40)
+            renderedTagLimit = (renderedTagLimit + TagRenderBatchSize)
+                .coerceAtMost(visibleTags.size)
+        }
     }
 
     Column(
@@ -568,7 +611,9 @@ private fun TagFilterContent(
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .weight(1f),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 top = 12.dp,
@@ -627,13 +672,19 @@ private fun TagFilterContent(
                 item {
                     EmptyHint("暂无可筛选标签。")
                 }
+            } else if (isPreparingTags && renderedTags.isEmpty()) {
+                item {
+                    LoadingTagsItem(
+                        totalCount = visibleTags.size
+                    )
+                }
             } else {
                 item {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(CompactTagHorizontalGap),
                         verticalArrangement = Arrangement.spacedBy(CompactTagVerticalGap)
                     ) {
-                        shownTags.forEach { tag ->
+                        renderedTags.forEach { tag ->
                             CompactFilterTagChip(
                                 tag = tag,
                                 selected = tag.tagKey in state.selectedTagKeys,
@@ -644,15 +695,11 @@ private fun TagFilterContent(
                     }
                 }
 
-                if (shownTags.size < visibleTags.size) {
+                if (renderedTags.size < visibleTags.size) {
                     item {
-                        AutoLoadMoreTagsItem(
-                            shownCount = shownTags.size,
-                            totalCount = visibleTags.size,
-                            onLoadMore = {
-                                visibleLimit = (visibleLimit + TagPageSize)
-                                    .coerceAtMost(visibleTags.size)
-                            }
+                        LoadingMoreTagsItem(
+                            shownCount = renderedTags.size,
+                            totalCount = visibleTags.size
                         )
                     }
                 }
@@ -662,26 +709,41 @@ private fun TagFilterContent(
 }
 
 @Composable
-private fun FlowLikeTagRow(
-    row: List<TagCountItem>,
-    selectedKeys: Set<String>,
-    showTagNamespacePrefix: Boolean,
-    onToggleTag: (TagCountItem) -> Unit
+private fun LoadingTagsItem(
+    totalCount: Int
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(CompactTagHorizontalGap),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        row.forEach { tag ->
-            CompactFilterTagChip(
-                tag = tag,
-                selected = tag.tagKey in selectedKeys,
-                showTagNamespacePrefix = showTagNamespacePrefix,
-                onToggleTag = onToggleTag
-            )
-        }
+        CircularProgressIndicator(
+            modifier = Modifier.size(20.dp),
+            strokeWidth = 2.dp
+        )
+
+        Text(
+            text = "正在加载筛选标签（$totalCount）…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp)
+        )
     }
+}
+
+@Composable
+private fun LoadingMoreTagsItem(
+    shownCount: Int,
+    totalCount: Int
+) {
+    Text(
+        text = "正在继续加载标签…（$shownCount/$totalCount）",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(vertical = 8.dp)
+    )
 }
 
 @Composable
@@ -1679,7 +1741,8 @@ private fun CompactFilterTagChip(
     tag: TagCountItem,
     selected: Boolean,
     showTagNamespacePrefix: Boolean,
-    onToggleTag: (TagCountItem) -> Unit
+    onToggleTag: (TagCountItem) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     CompositionLocalProvider(
         LocalMinimumInteractiveComponentSize provides 0.dp
@@ -1697,27 +1760,9 @@ private fun CompactFilterTagChip(
                     overflow = TextOverflow.Ellipsis
                 )
             },
-            modifier = Modifier.height(CompactTagChipHeight)
+            modifier = modifier.height(CompactTagChipHeight)
         )
     }
-}
-
-private fun estimateTagChipWidthDp(
-    label: String
-): Float {
-    var width = 36f
-
-    label.forEach { ch ->
-        width += when {
-            ch.code < 128 -> 7f
-            else -> 13f
-        }
-    }
-
-    return width.coerceIn(
-        minimumValue = 56f,
-        maximumValue = 240f
-    )
 }
 
 @Composable
@@ -1825,31 +1870,6 @@ private fun GridBookCoverItem(
 }
 
 @Composable
-private fun AutoLoadMoreTagsItem(
-    shownCount: Int,
-    totalCount: Int,
-    onLoadMore: () -> Unit
-) {
-    LaunchedEffect(shownCount, totalCount) {
-        onLoadMore()
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "正在加载更多…（$shownCount/$totalCount）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
 private fun ScanProgressCard(
     done: Int,
     total: Int,
@@ -1898,5 +1918,5 @@ private fun ScanProgressCard(
 private val CompactTagChipHeight = 28.dp
 private val CompactTagHorizontalGap = 6.dp
 private val CompactTagVerticalGap = 3.dp
-private val CompactTagGroupGap = 6.dp
-private const val TagPageSize = 120
+private const val TagInitialRenderCount = 120
+private const val TagRenderBatchSize = 160

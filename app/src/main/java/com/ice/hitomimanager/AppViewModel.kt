@@ -26,6 +26,8 @@ import com.ice.hitomimanager.data.local.entity.TagEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.ice.hitomimanager.data.model.HomeTab
 import com.ice.hitomimanager.data.model.HitomiSearchMetaResult
 import com.ice.hitomimanager.data.model.MatchTaskFilter
@@ -406,12 +408,17 @@ class AppViewModel(
 
         tagObserveJob = viewModelScope.launch {
             libraryRepository.observeTagCounts(root).collectLatest { tags ->
+                val mode = _libraryState.value.tagSortMode
+                val sortedTags = withContext(Dispatchers.Default) {
+                    sortTags(
+                        tags = tags,
+                        mode = mode
+                    )
+                }
+
                 _libraryState.update { state ->
                     state.copy(
-                        tagItems = sortTags(
-                            tags = tags,
-                            mode = state.tagSortMode
-                        )
+                        tagItems = sortedTags
                     )
                 }
             }
@@ -1110,12 +1117,26 @@ class AppViewModel(
     fun setTagSortMode(mode: TagSortMode) {
         _libraryState.update { state ->
             state.copy(
-                tagSortMode = mode,
-                tagItems = sortTags(
-                    tags = state.tagItems,
+                tagSortMode = mode
+            )
+        }
+
+        viewModelScope.launch {
+            val tags = _libraryState.value.tagItems
+            val sortedTags = withContext(Dispatchers.Default) {
+                sortTags(
+                    tags = tags,
                     mode = mode
                 )
-            )
+            }
+
+            _libraryState.update { state ->
+                if (state.tagSortMode == mode) {
+                    state.copy(tagItems = sortedTags)
+                } else {
+                    state
+                }
+            }
         }
     }
 
