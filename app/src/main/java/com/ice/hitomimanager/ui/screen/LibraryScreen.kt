@@ -23,7 +23,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterAlt
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -60,6 +63,7 @@ import com.ice.hitomimanager.LibraryUiState
 import com.ice.hitomimanager.data.model.BookItem
 import com.ice.hitomimanager.data.model.BookSortMode
 import com.ice.hitomimanager.data.model.HomeTab
+import com.ice.hitomimanager.data.model.LibraryFolderNode
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import java.io.File
@@ -99,6 +103,9 @@ fun LibraryScreen(
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
     onHomeTabChange: (HomeTab) -> Unit,
+    onSourceScopeChange: (String) -> Unit,
+    onOpenDirectory: (LibraryFolderNode) -> Unit,
+    onDirectoryUp: () -> Unit,
     onRescan: () -> Unit,
     onOpenSettings: () -> Unit,
     onToggleTag: (TagCountItem) -> Unit,
@@ -126,6 +133,7 @@ fun LibraryScreen(
 ) {
     val libraryListState = rememberLazyListState()
     val libraryGridState = rememberLazyGridState()
+    val directoryListState = rememberLazyListState()
     val tagListState = rememberLazyListState()
     val searchListState = rememberLazyListState()
     val searchGridState = rememberLazyGridState()
@@ -140,10 +148,10 @@ fun LibraryScreen(
     suspend fun scrollTabToTop(tab: HomeTab) {
         when (tab) {
             HomeTab.Library -> {
-                if (libraryLayoutMode == LibraryLayoutMode.Grid) {
-                    libraryGridState.scrollToItem(0)
-                } else {
-                    libraryListState.scrollToItem(0)
+                when (libraryLayoutMode) {
+                    LibraryLayoutMode.Grid -> libraryGridState.scrollToItem(0)
+                    LibraryLayoutMode.Directory -> directoryListState.scrollToItem(0)
+                    LibraryLayoutMode.List -> libraryListState.scrollToItem(0)
                 }
             }
 
@@ -184,7 +192,22 @@ fun LibraryScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text("Hitomi Manager")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Hitomi Manager",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        SourceScopeDropdown(
+                            state = state,
+                            onSourceScopeChange = onSourceScopeChange,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 },
                 actions = {
                     Box {
@@ -229,22 +252,22 @@ fun LibraryScreen(
                         onClick = onToggleLibraryLayoutMode
                     ) {
                         Icon(
-                            imageVector = if (libraryLayoutMode == LibraryLayoutMode.Grid) {
-                                Icons.Filled.ViewList
-                            } else {
-                                Icons.Filled.GridView
+                            imageVector = when (libraryLayoutMode) {
+                                LibraryLayoutMode.List -> Icons.Filled.GridView
+                                LibraryLayoutMode.Grid -> Icons.Filled.FolderOpen
+                                LibraryLayoutMode.Directory -> Icons.Filled.ViewList
                             },
-                            contentDescription = if (libraryLayoutMode == LibraryLayoutMode.Grid) {
-                                "切换到列表布局"
-                            } else {
-                                "切换到网格布局"
+                            contentDescription = when (libraryLayoutMode) {
+                                LibraryLayoutMode.List -> "切换到网格布局"
+                                LibraryLayoutMode.Grid -> "切换到目录布局"
+                                LibraryLayoutMode.Directory -> "切换到列表布局"
                             }
                         )
                     }
 
                     IconButton(
                         onClick = onRescan,
-                        enabled = state.folderUriString != null && !state.isScanning
+                        enabled = state.librarySources.isNotEmpty() && !state.isScanning
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Refresh,
@@ -270,7 +293,7 @@ fun LibraryScreen(
             )
         }
     ) { paddingValues ->
-        if (state.folderUriString == null) {
+        if (state.librarySources.isEmpty()) {
             NoFolderContent(
                 modifier = Modifier
                     .fillMaxSize()
@@ -292,11 +315,14 @@ fun LibraryScreen(
                     libraryLayoutMode = libraryLayoutMode,
                     libraryGridColumns = libraryGridColumns,
                     listState = libraryListState,
+                    directoryListState = directoryListState,
                     gridState = libraryGridState,
                     onClearTagFilters = onClearTagFilters,
                     onClearSearch = onClearSearch,
                     onOpenBook = onOpenBook,
-                    onMatchBook = onMatchBook
+                    onMatchBook = onMatchBook,
+                    onOpenDirectory = onOpenDirectory,
+                    onDirectoryUp = onDirectoryUp
                 )
             }
 
@@ -357,6 +383,49 @@ fun LibraryScreen(
 }
 
 @Composable
+private fun SourceScopeDropdown(
+    state: LibraryUiState,
+    onSourceScopeChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember {
+        mutableStateOf(false)
+    }
+    val current = state.sourceScopes.firstOrNull {
+        it.key == state.selectedSourceScopeKey
+    }
+
+    Box(modifier = modifier) {
+        TextButton(onClick = { expanded = true }) {
+            Text(
+                text = current?.label ?: "全部",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = "选择来源"
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            state.sourceScopes.forEach { scope ->
+                DropdownMenuItem(
+                    text = { Text(scope.label) },
+                    onClick = {
+                        expanded = false
+                        onSourceScopeChange(scope.key)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun NoFolderContent(
     modifier: Modifier,
     onOpenSettings: () -> Unit
@@ -401,11 +470,14 @@ private fun LibraryContent(
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
     listState: LazyListState,
+    directoryListState: LazyListState,
     gridState: LazyGridState,
     onClearTagFilters: () -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
-    onMatchBook: (BookItem) -> Unit
+    onMatchBook: (BookItem) -> Unit,
+    onOpenDirectory: (LibraryFolderNode) -> Unit,
+    onDirectoryUp: () -> Unit
 ) {
     Column(
         modifier = modifier
@@ -444,7 +516,17 @@ private fun LibraryContent(
             text = "共 ${state.books.size} 本"
         )
 
-        if (!state.isScanning && state.books.isEmpty()) {
+        if (libraryLayoutMode == LibraryLayoutMode.Directory) {
+            DirectoryContent(
+                state = state,
+                listState = directoryListState,
+                showRematchButtonInLibrary = showRematchButtonInLibrary,
+                onOpenDirectory = onOpenDirectory,
+                onDirectoryUp = onDirectoryUp,
+                onOpenBook = onOpenBook,
+                onMatchBook = onMatchBook
+            )
+        } else if (!state.isScanning && state.books.isEmpty()) {
             EmptyHint(
                 text = "没有符合条件的作品。"
             )
@@ -461,6 +543,129 @@ private fun LibraryContent(
             )
         }
     }
+}
+
+@Composable
+private fun DirectoryContent(
+    state: LibraryUiState,
+    listState: LazyListState,
+    showRematchButtonInLibrary: Boolean,
+    onOpenDirectory: (LibraryFolderNode) -> Unit,
+    onDirectoryUp: () -> Unit,
+    onOpenBook: (BookItem) -> Unit,
+    onMatchBook: (BookItem) -> Unit
+) {
+    val books = if (state.currentDirectorySourceId == null) {
+        state.books.filter { it.parentPath.isNullOrBlank() }
+    } else {
+        state.directoryBooks
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onDirectoryUp,
+                enabled = canNavigateDirectoryUp(state)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "上一级"
+                )
+            }
+
+            Text(
+                text = directoryTitle(state),
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            state = listState,
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            items(
+                items = state.directoryFolders,
+                key = { folder -> "folder:${folder.sourceId}:${folder.path}" }
+            ) { folder ->
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Filled.FolderOpen,
+                            contentDescription = null
+                        )
+                    },
+                    headlineContent = {
+                        Text(
+                            text = folder.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    supportingContent = {
+                        Text(
+                            text = folder.sourceName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenDirectory(folder) }
+                )
+            }
+
+            items(
+                items = books,
+                key = { book -> book.uriString }
+            ) { book ->
+                BookListItem(
+                    book = book,
+                    showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    onClick = { onOpenBook(book) },
+                    onMatchClick = { onMatchBook(book) }
+                )
+            }
+
+            if (state.directoryFolders.isEmpty() && books.isEmpty()) {
+                item {
+                    EmptyHint("当前目录没有作品。")
+                }
+            }
+        }
+    }
+}
+
+private fun directoryTitle(state: LibraryUiState): String {
+    val sourceName = state.librarySources
+        .firstOrNull { it.id == state.currentDirectorySourceId }
+        ?.name
+    val path = state.currentDirectoryPath
+
+    return when {
+        sourceName == null -> "来源根目录"
+        path.isBlank() -> sourceName
+        else -> "$sourceName / $path"
+    }
+}
+
+private fun canNavigateDirectoryUp(state: LibraryUiState): Boolean {
+    val sourceId = state.currentDirectorySourceId ?: return false
+    if (state.currentDirectoryPath.isNotBlank()) return true
+    val selectedScope = state.sourceScopes.firstOrNull {
+        it.key == state.selectedSourceScopeKey
+    }
+    return selectedScope?.sourceIds?.singleOrNull() != sourceId
 }
 
 @Composable
@@ -1782,7 +1987,8 @@ private fun BookShelfContent(
     }
 
     when (layoutMode) {
-        LibraryLayoutMode.List -> {
+        LibraryLayoutMode.List,
+        LibraryLayoutMode.Directory -> {
             BookList(
                 books = books,
                 listState = listState,

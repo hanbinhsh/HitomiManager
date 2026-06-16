@@ -17,37 +17,45 @@ class DocumentTreeScanner(
     suspend fun scan(
         treeUri: Uri,
         onProgress: (ScanProgress) -> Unit = {}
-    ): List<ScannedBook> = withContext(Dispatchers.IO) {
+    ): ScannedLibrary = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri)
-            ?: return@withContext emptyList()
+            ?: return@withContext ScannedLibrary(emptyList(), emptyList())
 
-        val archiveFiles = mutableListOf<DocumentFile>()
+        val archiveFiles = mutableListOf<Pair<DocumentFile, String>>()
+        val folders = mutableListOf<ScannedFolder>()
 
-        fun walk(dir: DocumentFile) {
+        fun walk(dir: DocumentFile, relativeDir: String) {
             val children = dir.listFiles()
 
             for (child in children) {
+                val name = child.name ?: continue
+                val childPath = joinPath(relativeDir, name)
+
                 if (child.isDirectory) {
-                    walk(child)
+                    folders += ScannedFolder(
+                        path = childPath,
+                        parentPath = relativeDir.ifBlank { null },
+                        name = name
+                    )
+                    walk(child, childPath)
                     continue
                 }
 
-                val name = child.name ?: continue
                 val ext = name.substringAfterLast('.', missingDelimiterValue = "")
                     .lowercase()
 
                 if (ext in archiveExtensions) {
-                    archiveFiles += child
+                    archiveFiles += child to relativeDir
                 }
             }
         }
 
         // 1. 先递归找出所有压缩包
-        walk(root)
+        walk(root, "")
 
         // 2. 排序后再统计总数
         val sortedArchiveFiles = archiveFiles.sortedWith { a, b ->
-            naturalCompare(a.name.orEmpty(), b.name.orEmpty())
+            naturalCompare(a.first.name.orEmpty(), b.first.name.orEmpty())
         }
 
         val total = sortedArchiveFiles.size
@@ -64,7 +72,7 @@ class DocumentTreeScanner(
         val result = mutableListOf<ScannedBook>()
 
         // 4. 逐个处理文件，并在生成封面前后更新进度
-        sortedArchiveFiles.forEachIndexed { index, file ->
+        sortedArchiveFiles.forEachIndexed { index, (file, parentPath) ->
             val name = file.name.orEmpty()
 
             // 开始处理当前文件
@@ -103,7 +111,9 @@ class DocumentTreeScanner(
                 uriString = file.uri.toString(),
                 fileSize = file.length(),
                 lastModified = file.lastModified(),
-                coverFilePath = coverPath
+                coverFilePath = coverPath,
+                relativePath = joinPath(parentPath, name),
+                parentPath = parentPath.ifBlank { null }
             )
 
             // 当前文件处理完成
@@ -116,7 +126,14 @@ class DocumentTreeScanner(
             )
         }
 
-        result
+        ScannedLibrary(
+            books = result,
+            folders = folders.distinctBy { it.path }
+        )
+    }
+
+    private fun joinPath(parent: String, name: String): String {
+        return if (parent.isBlank()) name else "$parent/$name"
     }
 
     private fun naturalCompare(a: String, b: String): Int {

@@ -22,6 +22,9 @@ interface TagDao {
     @Query("DELETE FROM book_tag WHERE bookUriString = :bookUriString")
     suspend fun deleteTagsForBook(bookUriString: String)
 
+    @Query("DELETE FROM book_tag WHERE bookUriString IN (:bookUriStrings)")
+    suspend fun deleteTagsForBooks(bookUriStrings: List<String>)
+
     @Query(
         """
         SELECT tag.*
@@ -50,6 +53,26 @@ interface TagDao {
     )
     fun observeTagCounts(
         libraryRootUriString: String
+    ): Flow<List<TagCountItem>>
+
+    @Query(
+        """
+    SELECT
+        tag.`key` AS tagKey,
+        tag.namespace AS namespace,
+        tag.name AS name,
+        tag.translatedName AS translatedName,
+        COUNT(book_tag.bookUriString) AS bookCount
+    FROM tag
+    INNER JOIN book_tag ON tag.`key` = book_tag.tagKey
+    INNER JOIN book ON book.uriString = book_tag.bookUriString
+    WHERE (:sourceCount = 0 OR book.sourceId IN (:sourceIds))
+    GROUP BY tag.`key`, tag.namespace, tag.name, tag.translatedName
+    """
+    )
+    fun observeTagCountsForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int
     ): Flow<List<TagCountItem>>
 
     @Query(

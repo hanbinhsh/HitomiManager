@@ -9,7 +9,9 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["uriString"], unique = true),
         Index(value = ["sourceGalleryId"]),
-        Index(value = ["matchStatus"])
+        Index(value = ["matchStatus"]),
+        Index(value = ["sourceId"]),
+        Index(value = ["sourceId", "parentPath"])
     ]
 )
 data class BookEntity(
@@ -39,4 +41,8 @@ data class BookEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val libraryRootUriString: String? = null,
+    val sourceId: String = libraryRootUriString.orEmpty(),
+    val relativePath: String? = null,
+    val parentPath: String? = null,
+    val lastSeenAt: Long? = null,
 )

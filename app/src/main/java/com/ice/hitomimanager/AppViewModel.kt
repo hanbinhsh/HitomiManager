@@ -36,11 +36,24 @@ import com.ice.hitomimanager.data.model.SettingsTab
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
+import com.ice.hitomimanager.data.model.LibraryFolderNode
+import com.ice.hitomimanager.data.model.LibrarySource
+import com.ice.hitomimanager.data.model.LibrarySourceScope
 import com.ice.hitomimanager.data.model.TagFilterTab
 import java.util.Locale
 
+private const val ALL_SOURCES_KEY = "all"
+private const val LOCAL_SOURCES_KEY = "local"
+
 data class LibraryUiState(
     val folderUriString: String? = null,
+    val librarySources: List<LibrarySource> = emptyList(),
+    val sourceScopes: List<LibrarySourceScope> = emptyList(),
+    val selectedSourceScopeKey: String = ALL_SOURCES_KEY,
+    val currentDirectorySourceId: String? = null,
+    val currentDirectoryPath: String = "",
+    val directoryFolders: List<LibraryFolderNode> = emptyList(),
+    val directoryBooks: List<BookItem> = emptyList(),
     val books: List<BookItem> = emptyList(),
     val bookSortMode: BookSortMode = BookSortMode.NameAsc,
 
@@ -79,6 +92,7 @@ data class MatchTaskDetailUiState(
 
 data class SettingsUiState(
     val folderUriString: String? = null,
+    val librarySources: List<LibrarySource> = emptyList(),
     val showTagNamespacePrefix: Boolean = true,
 
     val removeUnderscoreInMatchTitle: Boolean = true,
@@ -158,6 +172,9 @@ class AppViewModel(
     val bookDetailState: StateFlow<BookDetailUiState> = _bookDetailState.asStateFlow()
 
     private var libraryObserveJob: Job? = null
+    private var sourceObserveJob: Job? = null
+    private var directoryFolderObserveJob: Job? = null
+    private var directoryBookObserveJob: Job? = null
     private var tagObserveJob: Job? = null
 
     private var taskObserveJob: Job? = null
@@ -177,10 +194,15 @@ class AppViewModel(
     )
 
     private val libraryRepository = LibraryRepository(app)
+    private val initialSelectedSourceScopeKey = prefs.getString(
+        KEY_SELECTED_SOURCE_SCOPE,
+        ALL_SOURCES_KEY
+    ) ?: ALL_SOURCES_KEY
 
     private val _libraryState = MutableStateFlow(
         LibraryUiState(
             folderUriString = prefs.getString(KEY_FOLDER_URI, null),
+            selectedSourceScopeKey = initialSelectedSourceScopeKey,
             bookSortMode = readBookSortMode()
         )
     )
@@ -255,10 +277,10 @@ class AppViewModel(
 
     init {
         recoverInterruptedMatchTasks()
-        observeTagItems()
-        refreshLibraryBooks()
-        observeMatchTasks()
-        observeMatchTaskFilterCounts()
+        viewModelScope.launch {
+            libraryRepository.ensureLegacyLocalSource(prefs.getString(KEY_FOLDER_URI, null))
+            observeSources()
+        }
     }
 
     private fun recoverInterruptedMatchTasks() {
@@ -269,12 +291,50 @@ class AppViewModel(
         }
     }
 
+    private fun observeSources() {
+        sourceObserveJob?.cancel()
+        sourceObserveJob = viewModelScope.launch {
+            libraryRepository.observeSources().collectLatest { sources ->
+                val scopes = buildSourceScopes(sources)
+                val currentKey = _libraryState.value.selectedSourceScopeKey
+                val fixedKey = when {
+                    scopes.any { it.key == currentKey } -> currentKey
+                    scopes.isNotEmpty() -> scopes.first().key
+                    else -> ALL_SOURCES_KEY
+                }
+                val selected = scopes.firstOrNull { it.key == fixedKey }
+                val concreteSourceId = selected?.sourceIds?.singleOrNull()
+                _libraryState.update {
+                    it.copy(
+                        librarySources = sources,
+                        sourceScopes = scopes,
+                        selectedSourceScopeKey = fixedKey,
+                        folderUriString = selected?.sourceIds?.singleOrNull() ?: selected?.key,
+                        currentDirectorySourceId = concreteSourceId,
+                        currentDirectoryPath = selected?.folderPath.orEmpty()
+                    )
+                }
+                _settingsState.update {
+                    it.copy(
+                        librarySources = sources,
+                        folderUriString = sources.firstOrNull()?.rootUriString
+                    )
+                }
+                refreshLibraryBooks()
+                observeTagItems()
+                observeMatchTasks()
+                observeMatchTaskFilterCounts()
+                observeDirectory()
+            }
+        }
+    }
+
     private fun observeMatchTasks() {
         taskObserveJob?.cancel()
 
-        val root = currentLibraryRoot()
+        val sourceIds = currentSourceIds()
 
-        if (root == null) {
+        if (_libraryState.value.librarySources.isEmpty()) {
             _libraryState.update {
                 it.copy(
                     matchTasks = emptyList(),
@@ -288,7 +348,7 @@ class AppViewModel(
 
         taskObserveJob = viewModelScope.launch {
             if (filter == MatchTaskFilter.Unqueued) {
-                libraryRepository.observeUnqueuedUnmatchedBooks(root)
+                libraryRepository.observeUnqueuedUnmatchedBooksForSourceIds(sourceIds)
                     .collectLatest { books ->
                         _libraryState.update {
                             it.copy(
@@ -300,8 +360,8 @@ class AppViewModel(
             } else {
                 val statuses = statusesForFilter(filter)
 
-                libraryRepository.observeMatchTasksByStatuses(
-                    libraryRootUriString = root,
+                libraryRepository.observeMatchTasksByStatusesForSourceIds(
+                    sourceIds = sourceIds,
                     statuses = statuses
                 ).collectLatest { tasks ->
                     _libraryState.update {
@@ -318,9 +378,9 @@ class AppViewModel(
     private fun observeMatchTaskFilterCounts() {
         taskCountObserveJob?.cancel()
 
-        val root = currentLibraryRoot()
+        val sourceIds = currentSourceIds()
 
-        if (root == null) {
+        if (_libraryState.value.librarySources.isEmpty()) {
             _libraryState.update {
                 it.copy(matchTaskFilterCounts = emptyMap())
             }
@@ -328,7 +388,7 @@ class AppViewModel(
         }
 
         taskCountObserveJob = viewModelScope.launch {
-            libraryRepository.observeMatchTaskFilterCounts(root)
+            libraryRepository.observeMatchTaskFilterCountsForSourceIds(sourceIds)
                 .collectLatest { counts ->
                     _libraryState.update {
                         it.copy(matchTaskFilterCounts = counts)
@@ -338,10 +398,11 @@ class AppViewModel(
     }
 
     private suspend fun refreshMatchTaskFilterCountsOnce() {
-        val root = currentLibraryRoot() ?: return
+        if (_libraryState.value.librarySources.isEmpty()) return
+        val sourceIds = currentSourceIds()
 
         val counts = runCatching {
-            libraryRepository.getMatchTaskFilterCounts(root)
+            libraryRepository.getMatchTaskFilterCountsForSourceIds(sourceIds)
         }.getOrNull() ?: return
 
         _libraryState.update {
@@ -397,9 +458,9 @@ class AppViewModel(
     private fun observeTagItems() {
         tagObserveJob?.cancel()
 
-        val root = currentLibraryRoot()
+        val sourceIds = currentSourceIds()
 
-        if (root == null) {
+        if (_libraryState.value.librarySources.isEmpty()) {
             _libraryState.update {
                 it.copy(tagItems = emptyList())
             }
@@ -407,7 +468,7 @@ class AppViewModel(
         }
 
         tagObserveJob = viewModelScope.launch {
-            libraryRepository.observeTagCounts(root).collectLatest { tags ->
+            libraryRepository.observeTagCountsForSourceIds(sourceIds).collectLatest { tags ->
                 val mode = _libraryState.value.tagSortMode
                 val sortedTags = withContext(Dispatchers.Default) {
                     sortTags(
@@ -429,9 +490,9 @@ class AppViewModel(
         libraryObserveJob?.cancel()
 
         val state = _libraryState.value
-        val root = state.folderUriString
+        val sourceIds = currentSourceIds()
 
-        if (root == null) {
+        if (state.librarySources.isEmpty()) {
             _libraryState.update {
                 it.copy(books = emptyList())
             }
@@ -444,21 +505,21 @@ class AppViewModel(
         libraryObserveJob = viewModelScope.launch {
             val flow = when {
                 searchQuery.isNotBlank() -> {
-                    libraryRepository.observeBooksBySearch(
-                        libraryRootUriString = root,
+                    libraryRepository.observeBooksBySearchForSourceIds(
+                        sourceIds = sourceIds,
                         query = searchQuery
                     )
                 }
 
                 selectedTagKeys.isNotEmpty() -> {
-                    libraryRepository.observeBooksByAllTags(
-                        libraryRootUriString = root,
+                    libraryRepository.observeBooksByAllTagsForSourceIds(
+                        sourceIds = sourceIds,
                         tagKeys = selectedTagKeys
                     )
                 }
 
                 else -> {
-                    libraryRepository.observeBooks(root)
+                    libraryRepository.observeBooksForSourceIds(sourceIds)
                 }
             }
 
@@ -593,7 +654,171 @@ class AppViewModel(
     }
 
     private fun currentLibraryRoot(): String? {
-        return _libraryState.value.folderUriString
+        val state = _libraryState.value
+        val selectedScope = state.sourceScopes.firstOrNull {
+            it.key == state.selectedSourceScopeKey
+        }
+        return selectedScope?.sourceIds?.singleOrNull()
+            ?: state.librarySources.firstOrNull()?.id
+            ?: state.folderUriString
+    }
+
+    fun selectSourceScope(key: String) {
+        val state = _libraryState.value
+        val scope = state.sourceScopes.firstOrNull { it.key == key }
+            ?: state.sourceScopes.firstOrNull()
+            ?: return
+        prefs.edit()
+            .putString(KEY_SELECTED_SOURCE_SCOPE, scope.key)
+            .apply()
+        val concreteSourceId = scope.sourceIds.singleOrNull()
+        _libraryState.update {
+            it.copy(
+                selectedSourceScopeKey = scope.key,
+                folderUriString = concreteSourceId ?: scope.key,
+                currentDirectorySourceId = concreteSourceId,
+                currentDirectoryPath = scope.folderPath.orEmpty(),
+                selectedTagKeys = emptySet(),
+                searchQuery = "",
+                books = emptyList()
+            )
+        }
+        refreshLibraryBooks()
+        observeTagItems()
+        observeMatchTasks()
+        observeMatchTaskFilterCounts()
+        observeDirectory()
+    }
+
+    fun openDirectory(folder: LibraryFolderNode) {
+        _libraryState.update {
+            it.copy(
+                currentDirectorySourceId = folder.sourceId,
+                currentDirectoryPath = folder.path
+            )
+        }
+        observeDirectory()
+    }
+
+    fun navigateDirectoryUp() {
+        val state = _libraryState.value
+        val path = state.currentDirectoryPath
+        if (path.isBlank()) {
+            val selectedScope = state.sourceScopes.firstOrNull { it.key == state.selectedSourceScopeKey }
+            if (selectedScope?.sourceIds?.size == 1) return
+            _libraryState.update {
+                it.copy(
+                    currentDirectorySourceId = null,
+                    currentDirectoryPath = ""
+                )
+            }
+        } else {
+            val parent = path.substringBeforeLast('/', missingDelimiterValue = "")
+            _libraryState.update {
+                it.copy(currentDirectoryPath = parent)
+            }
+        }
+        observeDirectory()
+    }
+
+    private fun observeDirectory() {
+        directoryFolderObserveJob?.cancel()
+        directoryBookObserveJob?.cancel()
+
+        val state = _libraryState.value
+        val concreteSourceId = state.currentDirectorySourceId
+            ?: state.sourceScopes.firstOrNull { it.key == state.selectedSourceScopeKey }
+                ?.sourceIds
+                ?.singleOrNull()
+
+        if (concreteSourceId == null) {
+            val sourceIds = currentSourceIds()
+            directoryFolderObserveJob = viewModelScope.launch {
+                libraryRepository.observeFoldersForSourceIds(sourceIds)
+                    .collectLatest { folders ->
+                        val roots = folders.filter { it.parentPath.isNullOrBlank() }
+                        _libraryState.update {
+                            it.copy(
+                                directoryFolders = roots,
+                                directoryBooks = emptyList(),
+                                currentDirectorySourceId = null,
+                                currentDirectoryPath = ""
+                            )
+                        }
+                    }
+            }
+            return
+        }
+
+        val parentPath = state.currentDirectoryPath
+
+        directoryFolderObserveJob = viewModelScope.launch {
+            libraryRepository.observeChildFolders(concreteSourceId, parentPath)
+                .collectLatest { folders ->
+                    _libraryState.update {
+                        it.copy(directoryFolders = folders)
+                    }
+                }
+        }
+
+        directoryBookObserveJob = viewModelScope.launch {
+            libraryRepository.observeBooksInFolder(concreteSourceId, parentPath)
+                .collectLatest { books ->
+                    _libraryState.update { state ->
+                        state.copy(
+                            directoryBooks = sortBooks(
+                                books = books,
+                                mode = state.bookSortMode
+                            )
+                        )
+                    }
+                    repairMissingCovers(books)
+                }
+        }
+    }
+
+    private fun currentSourceIds(): List<String> {
+        val state = _libraryState.value
+        val scope = state.sourceScopes.firstOrNull {
+            it.key == state.selectedSourceScopeKey
+        }
+        return when {
+            state.librarySources.isEmpty() -> emptyList()
+            scope == null -> emptyList()
+            scope.key == ALL_SOURCES_KEY -> emptyList()
+            else -> scope.sourceIds
+        }
+    }
+
+    private fun buildSourceScopes(
+        sources: List<LibrarySource>
+    ): List<LibrarySourceScope> {
+        if (sources.isEmpty()) return emptyList()
+        val scopes = mutableListOf<LibrarySourceScope>()
+        scopes += LibrarySourceScope(
+            key = ALL_SOURCES_KEY,
+            label = "全部",
+            sourceIds = emptyList()
+        )
+        scopes += LibrarySourceScope(
+            key = LOCAL_SOURCES_KEY,
+            label = "本地",
+            sourceIds = sources.map { it.id }
+        )
+        sources.forEach { source ->
+            scopes += LibrarySourceScope(
+                key = sourceScopeKey(source.id),
+                label = source.name,
+                sourceIds = listOf(source.id),
+                folderSourceId = source.id,
+                folderPath = ""
+            )
+        }
+        return scopes
+    }
+
+    private fun sourceScopeKey(sourceId: String): String {
+        return "source:$sourceId"
     }
 
     fun toggleTagFilter(tag: TagCountItem) {
@@ -625,9 +850,9 @@ class AppViewModel(
                 )
             }
 
-            val root = currentLibraryRoot()
+            val sourceIds = currentSourceIds()
 
-            if (root == null) {
+            if (_libraryState.value.librarySources.isEmpty()) {
                 _libraryState.update {
                     it.copy(
                         isBatchMatching = false,
@@ -638,9 +863,7 @@ class AppViewModel(
             }
 
             val unmatchedBooks: List<BookItem> = try {
-                libraryRepository.getUnmatchedBooks(
-                    libraryRootUriString = root
-                )
+                libraryRepository.getUnmatchedBooksForSourceIds(sourceIds)
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(
@@ -672,7 +895,7 @@ class AppViewModel(
                         runCatching {
                             processOneBatchMatchBook(
                                 book = book,
-                                libraryRootUriString = root
+                                libraryRootUriString = book.libraryRootUriString ?: book.sourceId
                             )
                         }.onFailure {
                             // 单个任务失败不终止整个批量匹配
@@ -700,6 +923,10 @@ class AppViewModel(
                 _libraryState.update {
                     it.copy(
                         books = emptyList(),
+                        librarySources = emptyList(),
+                        sourceScopes = emptyList(),
+                        directoryFolders = emptyList(),
+                        directoryBooks = emptyList(),
                         tagItems = emptyList(),
                         matchTasks = emptyList(),
                         unqueuedUnmatchedBooks = emptyList(),
@@ -1303,7 +1530,8 @@ class AppViewModel(
     }
 
     fun skipUnqueuedBook(book: BookItem) {
-        val root = currentLibraryRoot() ?: return
+        val root = book.libraryRootUriString ?: book.sourceId
+        if (root.isBlank()) return
 
         viewModelScope.launch {
             val taskId = libraryRepository.createMatchTask(
@@ -1367,9 +1595,9 @@ class AppViewModel(
                 )
             }
 
-            val root = currentLibraryRoot()
+            val sourceIds = currentSourceIds()
 
-            if (root == null) {
+            if (_libraryState.value.librarySources.isEmpty()) {
                 _libraryState.update {
                     it.copy(
                         isBatchMatching = false,
@@ -1380,8 +1608,8 @@ class AppViewModel(
             }
 
             val failedTasks: List<MatchTaskEntity> = try {
-                libraryRepository.getMatchTasksByStatuses(
-                    libraryRootUriString = root,
+                libraryRepository.getMatchTasksByStatusesForSourceIds(
+                    sourceIds = sourceIds,
                     statuses = listOf(MatchTaskStatus.Failed)
                 )
             } catch (e: Exception) {
@@ -1469,31 +1697,34 @@ class AppViewModel(
         } catch (_: SecurityException) {
         }
 
-        val root = uri.toString()
-
-        prefs.edit()
-            .putString(KEY_FOLDER_URI, root)
-            .apply()
-
-        _settingsState.update {
-            it.copy(folderUriString = root)
+        viewModelScope.launch {
+            runCatching {
+                val source = libraryRepository.addOrUpdateLocalSource(uri)
+                prefs.edit()
+                    .putString(KEY_FOLDER_URI, source.rootUriString)
+                    .putString(KEY_SELECTED_SOURCE_SCOPE, sourceScopeKey(source.id))
+                    .apply()
+                _settingsState.update {
+                    it.copy(folderUriString = source.rootUriString)
+                }
+                _libraryState.update {
+                    it.copy(
+                        folderUriString = source.id,
+                        selectedSourceScopeKey = sourceScopeKey(source.id),
+                        currentDirectorySourceId = source.id,
+                        currentDirectoryPath = "",
+                        selectedTagKeys = emptySet(),
+                        searchQuery = "",
+                        error = null
+                    )
+                }
+                scanSource(source.id)
+            }.onFailure { e ->
+                _libraryState.update {
+                    it.copy(error = e.message ?: "添加目录失败")
+                }
+            }
         }
-
-        _libraryState.update {
-            it.copy(
-                folderUriString = root,
-                selectedTagKeys = emptySet(),
-                searchQuery = "",
-                error = null
-            )
-        }
-
-        refreshLibraryBooks()
-        observeTagItems()
-        observeMatchTasks()
-        observeMatchTaskFilterCounts()
-
-        scanFolder(uri)
     }
 
     fun openBookDetail(book: BookItem) {
@@ -1532,8 +1763,60 @@ class AppViewModel(
     }
 
     fun rescan() {
-        val uriString = _libraryState.value.folderUriString ?: return
-        scanFolder(Uri.parse(uriString))
+        scanSources(currentSourceIds())
+    }
+
+    fun renameSource(sourceId: String, name: String) {
+        viewModelScope.launch {
+            runCatching {
+                libraryRepository.renameSource(sourceId, name)
+            }.onFailure { e ->
+                _libraryState.update {
+                    it.copy(error = e.message ?: "重命名目录失败")
+                }
+            }
+        }
+    }
+
+    fun deleteSource(sourceId: String) {
+        viewModelScope.launch {
+            runCatching {
+                libraryRepository.deleteSource(sourceId)
+                if (_libraryState.value.currentDirectorySourceId == sourceId) {
+                    _libraryState.update {
+                        it.copy(
+                            currentDirectorySourceId = null,
+                            currentDirectoryPath = ""
+                        )
+                    }
+                }
+            }.onFailure { e ->
+                _libraryState.update {
+                    it.copy(error = e.message ?: "删除目录来源失败")
+                }
+            }
+        }
+    }
+
+    fun cleanupMissingFromConfiguredSources() {
+        viewModelScope.launch {
+            runCatching {
+                libraryRepository.cleanupMissingFromConfiguredSources(currentSourceIds())
+            }.onSuccess { count ->
+                _libraryState.update {
+                    it.copy(error = "已清理 $count 条数据库记录")
+                }
+                refreshLibraryBooks()
+                observeTagItems()
+                observeMatchTasks()
+                observeMatchTaskFilterCounts()
+                observeDirectory()
+            }.onFailure { e ->
+                _libraryState.update {
+                    it.copy(error = e.message ?: "清理数据库记录失败")
+                }
+            }
+        }
     }
 
     fun openBook(book: BookItem) {
@@ -1840,9 +2123,9 @@ class AppViewModel(
                 )
             }
 
-            val root = currentLibraryRoot()
+            val sourceIds = currentSourceIds()
 
-            if (root == null) {
+            if (_libraryState.value.librarySources.isEmpty()) {
                 _libraryState.update {
                     it.copy(
                         isBatchMatching = false,
@@ -1853,8 +2136,8 @@ class AppViewModel(
             }
 
             val failedTasks: List<MatchTaskEntity> = try {
-                libraryRepository.getMatchTasksByStatuses(
-                    libraryRootUriString = root,
+                libraryRepository.getMatchTasksByStatusesForSourceIds(
+                    sourceIds = sourceIds,
                     statuses = listOf(MatchTaskStatus.Failed)
                 )
             } catch (e: Exception) {
@@ -2135,6 +2418,9 @@ class AppViewModel(
         viewModelScope.launch {
             try {
                 libraryObserveJob?.cancel()
+                sourceObserveJob?.cancel()
+                directoryFolderObserveJob?.cancel()
+                directoryBookObserveJob?.cancel()
                 tagObserveJob?.cancel()
                 taskObserveJob?.cancel()
                 taskCountObserveJob?.cancel()
@@ -2151,6 +2437,10 @@ class AppViewModel(
                 _libraryState.update {
                     it.copy(
                         books = emptyList(),
+                        librarySources = emptyList(),
+                        sourceScopes = emptyList(),
+                        directoryFolders = emptyList(),
+                        directoryBooks = emptyList(),
                         tagItems = emptyList(),
                         matchTasks = emptyList(),
                         unqueuedUnmatchedBooks = emptyList(),
@@ -2161,19 +2451,13 @@ class AppViewModel(
                     )
                 }
 
-                refreshLibraryBooks()
-                observeTagItems()
-                observeMatchTasks()
-                observeMatchTaskFilterCounts()
+                observeSources()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(error = e.message ?: "导入数据库失败")
                 }
 
-                refreshLibraryBooks()
-                observeTagItems()
-                observeMatchTasks()
-                observeMatchTaskFilterCounts()
+                observeSources()
             }
         }
     }
@@ -2226,8 +2510,25 @@ class AppViewModel(
         ensurePageLoaded(index)
     }
 
-    private fun scanFolder(uri: Uri) {
+    fun scanSource(sourceId: String) {
+        scanSources(listOf(sourceId))
+    }
+
+    private fun scanSources(sourceIds: List<String>) {
         viewModelScope.launch {
+            val targetSourceIds = if (sourceIds.isEmpty()) {
+                _libraryState.value.librarySources.map { it.id }
+            } else {
+                sourceIds
+            }
+
+            if (targetSourceIds.isEmpty()) {
+                _libraryState.update {
+                    it.copy(error = "请先添加书库目录")
+                }
+                return@launch
+            }
+
             _libraryState.update {
                 it.copy(
                     isScanning = true,
@@ -2239,18 +2540,20 @@ class AppViewModel(
             }
 
             try {
-                libraryRepository.scanAndSync(
-                    treeUri = uri,
-                    onProgress = { progress ->
-                        _libraryState.update {
-                            it.copy(
-                                scanDone = progress.done,
-                                scanTotal = progress.total,
-                                scanCurrentName = progress.currentName
-                            )
+                for (sourceId in targetSourceIds) {
+                    libraryRepository.scanSource(
+                        sourceId = sourceId,
+                        onProgress = { progress ->
+                            _libraryState.update {
+                                it.copy(
+                                    scanDone = progress.done,
+                                    scanTotal = progress.total,
+                                    scanCurrentName = progress.currentName
+                                )
+                            }
                         }
-                    }
-                )
+                    )
+                }
 
                 _libraryState.update {
                     it.copy(
@@ -2263,13 +2566,15 @@ class AppViewModel(
                 observeTagItems()
                 observeMatchTasks()
                 observeMatchTaskFilterCounts()
+                observeDirectory()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(
                         isScanning = false,
                         scanDone = 0,
                         scanTotal = 0,
-                        scanCurrentName = null
+                        scanCurrentName = null,
+                        error = e.message ?: "扫描失败"
                     )
                 }
             }
@@ -2542,10 +2847,10 @@ class AppViewModel(
 
     fun toggleLibraryLayoutMode() {
         val current = _settingsState.value.libraryLayoutMode
-        val next = if (current == LibraryLayoutMode.List) {
-            LibraryLayoutMode.Grid
-        } else {
-            LibraryLayoutMode.List
+        val next = when (current) {
+            LibraryLayoutMode.List -> LibraryLayoutMode.Grid
+            LibraryLayoutMode.Grid -> LibraryLayoutMode.Directory
+            LibraryLayoutMode.Directory -> LibraryLayoutMode.List
         }
 
         setLibraryLayoutMode(next)
@@ -2565,6 +2870,7 @@ class AppViewModel(
 
     companion object {
         private const val KEY_FOLDER_URI = "folder_uri"
+        private const val KEY_SELECTED_SOURCE_SCOPE = "selected_source_scope"
         private const val KEY_SHOW_TAG_NAMESPACE_PREFIX = "show_tag_namespace_prefix"
         private const val KEY_REMOVE_UNDERSCORE_IN_MATCH_TITLE = "remove_underscore_in_match_title"
         private const val KEY_REMOVE_TRAILING_NUMBER_SUFFIX_IN_MATCH_TITLE = "remove_trailing_number_suffix_in_match_title"

@@ -33,6 +33,19 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    ORDER BY updatedAt DESC, id DESC
+    """
+    )
+    fun observeTasksForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int
+    ): Flow<List<MatchTaskEntity>>
+
+    @Query(
+        """
+    SELECT *
+    FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
       AND status IN (:statuses)
     ORDER BY updatedAt DESC, id DESC
@@ -40,6 +53,21 @@ interface MatchTaskDao {
     )
     fun observeTasksByStatuses(
         libraryRootUriString: String,
+        statuses: List<String>
+    ): Flow<List<MatchTaskEntity>>
+
+    @Query(
+        """
+    SELECT *
+    FROM match_task
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+      AND status IN (:statuses)
+    ORDER BY updatedAt DESC, id DESC
+    """
+    )
+    fun observeTasksByStatusesForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int,
         statuses: List<String>
     ): Flow<List<MatchTaskEntity>>
 
@@ -59,12 +87,38 @@ interface MatchTaskDao {
         """
     SELECT status, COUNT(*) AS count
     FROM match_task
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    GROUP BY status
+    """
+    )
+    fun observeStatusCountsForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int
+    ): Flow<List<MatchTaskStatusCount>>
+
+    @Query(
+        """
+    SELECT status, COUNT(*) AS count
+    FROM match_task
     WHERE libraryRootUriString = :libraryRootUriString
     GROUP BY status
     """
     )
     suspend fun getStatusCounts(
         libraryRootUriString: String
+    ): List<MatchTaskStatusCount>
+
+    @Query(
+        """
+    SELECT status, COUNT(*) AS count
+    FROM match_task
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    GROUP BY status
+    """
+    )
+    suspend fun getStatusCountsForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int
     ): List<MatchTaskStatusCount>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -123,6 +177,21 @@ interface MatchTaskDao {
     )
     suspend fun getTasksByStatuses(
         libraryRootUriString: String,
+        statuses: List<String>
+    ): List<MatchTaskEntity>
+
+    @Query(
+        """
+    SELECT *
+    FROM match_task
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+      AND status IN (:statuses)
+    ORDER BY updatedAt DESC, id DESC
+    """
+    )
+    suspend fun getTasksByStatusesForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int,
         statuses: List<String>
     ): List<MatchTaskEntity>
 
@@ -227,4 +296,10 @@ interface MatchTaskDao {
         coverFilePath: String,
         updatedAt: Long
     )
+
+    @Query("DELETE FROM match_candidate WHERE taskId IN (SELECT id FROM match_task WHERE bookUriString IN (:bookUriStrings))")
+    suspend fun deleteCandidatesForBooks(bookUriStrings: List<String>)
+
+    @Query("DELETE FROM match_task WHERE bookUriString IN (:bookUriStrings)")
+    suspend fun deleteTasksForBooks(bookUriStrings: List<String>)
 }

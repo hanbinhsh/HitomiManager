@@ -38,6 +38,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ice.hitomimanager.SettingsUiState
+import com.ice.hitomimanager.data.model.LibraryLayoutMode
+import com.ice.hitomimanager.data.model.LibrarySource
 import com.ice.hitomimanager.data.model.SettingsTab
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
@@ -56,6 +58,9 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onSettingsTabChange: (SettingsTab) -> Unit,
     onFolderPicked: (Uri) -> Unit,
+    onRenameSource: (String, String) -> Unit,
+    onDeleteSource: (String) -> Unit,
+    onScanSource: (String) -> Unit,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
     onRemoveUnderscoreInMatchTitleChange: (Boolean) -> Unit,
     onRemoveTrailingNumberSuffixInMatchTitleChange: (Boolean) -> Unit,
@@ -68,8 +73,10 @@ fun SettingsScreen(
     onClearDatabase: () -> Unit,
     onExportDatabasePicked: (Uri) -> Unit,
     onImportDatabasePicked: (Uri) -> Unit,
+    onCleanupMissingRecords: () -> Unit,
     onOpenTasks: () -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onLibraryLayoutModeChange: (LibraryLayoutMode) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit,
     onFilteredMatchLanguagesChange: (String) -> Unit,
     onMatchSearchTimeoutSecondsChange: (String) -> Unit,
@@ -105,6 +112,9 @@ fun SettingsScreen(
     var showClearDatabaseDialog by remember {
         mutableStateOf(false)
     }
+    var showCleanupMissingDialog by remember {
+        mutableStateOf(false)
+    }
 
     if (showClearDatabaseDialog) {
         AlertDialog(
@@ -131,6 +141,39 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         showClearDatabaseDialog = false
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showCleanupMissingDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showCleanupMissingDialog = false
+            },
+            title = {
+                Text("清理缺失记录？")
+            },
+            text = {
+                Text("只会删除数据库中当前配置目录最近成功扫描未见到的作品记录，以及对应标签、任务和候选；不会删除本地文件。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCleanupMissingDialog = false
+                        onCleanupMissingRecords()
+                    }
+                ) {
+                    Text("确认清理")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showCleanupMissingDialog = false
                     }
                 ) {
                     Text("取消")
@@ -186,6 +229,9 @@ fun SettingsScreen(
                         onPickFolder = {
                             folderPicker.launch(null)
                         },
+                        onRenameSource = onRenameSource,
+                        onDeleteSource = onDeleteSource,
+                        onScanSource = onScanSource,
                         onExportDatabaseClick = {
                             val timestamp = SimpleDateFormat(
                                 "yyyyMMdd_HHmmss",
@@ -204,6 +250,9 @@ fun SettingsScreen(
                         },
                         onClearDatabaseClick = {
                             showClearDatabaseDialog = true
+                        },
+                        onCleanupMissingClick = {
+                            showCleanupMissingDialog = true
                         }
                     )
                 }
@@ -213,6 +262,7 @@ fun SettingsScreen(
                         state = state,
                         onShowTagNamespacePrefixChange = onShowTagNamespacePrefixChange,
                         onShowRematchButtonInLibraryChange = onShowRematchButtonInLibraryChange,
+                        onLibraryLayoutModeChange = onLibraryLayoutModeChange,
                         onLibraryGridColumnsChange = onLibraryGridColumnsChange
                     )
                 }
@@ -244,10 +294,64 @@ fun SettingsScreen(
 private fun GeneralSettingsContent(
     state: SettingsUiState,
     onPickFolder: () -> Unit,
+    onRenameSource: (String, String) -> Unit,
+    onDeleteSource: (String) -> Unit,
+    onScanSource: (String) -> Unit,
     onExportDatabaseClick: () -> Unit,
     onImportDatabaseClick: () -> Unit,
-    onClearDatabaseClick: () -> Unit
+    onClearDatabaseClick: () -> Unit,
+    onCleanupMissingClick: () -> Unit
 ) {
+    var renamingSource by remember {
+        mutableStateOf<LibrarySource?>(null)
+    }
+    var renameText by remember {
+        mutableStateOf("")
+    }
+
+    renamingSource?.let { source ->
+        AlertDialog(
+            onDismissRequest = {
+                renamingSource = null
+            },
+            title = {
+                Text("重命名目录")
+            },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = {
+                        renameText = it
+                    },
+                    label = {
+                        Text("目录名称")
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRenameSource(source.id, renameText)
+                        renamingSource = null
+                    }
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        renamingSource = null
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -257,32 +361,46 @@ private fun GeneralSettingsContent(
 
         ListItem(
             headlineContent = {
-                Text("当前目录")
+                Text("添加本地目录")
             },
             supportingContent = {
-                Text(
-                    text = state.folderUriString ?: "尚未选择",
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        )
-
-        ListItem(
-            headlineContent = {
-                Text("选择本地目录")
-            },
-            supportingContent = {
-                Text("选择存放 zip / cbz 文件的目录。")
+                Text("选择存放 zip / cbz 文件的目录，可添加多个。")
             },
             trailingContent = {
                 Button(
                     onClick = onPickFolder
                 ) {
-                    Text(if (state.folderUriString == null) "选择" else "更换")
+                    Text("添加")
                 }
             }
         )
+
+        if (state.librarySources.isEmpty()) {
+            ListItem(
+                headlineContent = {
+                    Text("尚未添加目录")
+                },
+                supportingContent = {
+                    Text("添加目录后会自动扫描，也可以在列表里单独重新扫描。")
+                }
+            )
+        } else {
+            state.librarySources.forEach { source ->
+                SourceSettingsItem(
+                    source = source,
+                    onRename = {
+                        renamingSource = source
+                        renameText = source.name
+                    },
+                    onScan = {
+                        onScanSource(source.id)
+                    },
+                    onDelete = {
+                        onDeleteSource(source.id)
+                    }
+                )
+            }
+        }
 
         HorizontalDivider(
             modifier = Modifier.padding(vertical = 8.dp)
@@ -330,6 +448,23 @@ private fun GeneralSettingsContent(
 
         ListItem(
             headlineContent = {
+                Text("清理缺失记录")
+            },
+            supportingContent = {
+                Text("删除最近成功扫描未见到的数据库记录，不会删除本地文件。")
+            },
+            trailingContent = {
+                Button(
+                    onClick = onCleanupMissingClick,
+                    enabled = state.librarySources.isNotEmpty()
+                ) {
+                    Text("清理")
+                }
+            }
+        )
+
+        ListItem(
+            headlineContent = {
                 Text("清空数据库")
             },
             supportingContent = {
@@ -347,10 +482,54 @@ private fun GeneralSettingsContent(
 }
 
 @Composable
+private fun SourceSettingsItem(
+    source: LibrarySource,
+    onRename: () -> Unit,
+    onScan: () -> Unit,
+    onDelete: () -> Unit
+) {
+    ListItem(
+        headlineContent = {
+            Text(
+                text = source.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        supportingContent = {
+            Text(
+                text = source.rootUriString,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        trailingContent = {
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = onScan) {
+                        Text("扫描")
+                    }
+                    TextButton(onClick = onRename) {
+                        Text("重命名")
+                    }
+                }
+                TextButton(onClick = onDelete) {
+                    Text("删除来源")
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun DisplaySettingsContent(
     state: SettingsUiState,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onLibraryLayoutModeChange: (LibraryLayoutMode) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit
 ) {
     Column(
@@ -380,6 +559,45 @@ private fun DisplaySettingsContent(
         )
 
         SectionTitle("主页显示")
+
+        ListItem(
+            headlineContent = {
+                Text("布局模式")
+            },
+            supportingContent = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = state.libraryLayoutMode == LibraryLayoutMode.List,
+                        onClick = {
+                            onLibraryLayoutModeChange(LibraryLayoutMode.List)
+                        },
+                        label = {
+                            Text("列表")
+                        }
+                    )
+                    FilterChip(
+                        selected = state.libraryLayoutMode == LibraryLayoutMode.Grid,
+                        onClick = {
+                            onLibraryLayoutModeChange(LibraryLayoutMode.Grid)
+                        },
+                        label = {
+                            Text("网格")
+                        }
+                    )
+                    FilterChip(
+                        selected = state.libraryLayoutMode == LibraryLayoutMode.Directory,
+                        onClick = {
+                            onLibraryLayoutModeChange(LibraryLayoutMode.Directory)
+                        },
+                        label = {
+                            Text("目录")
+                        }
+                    )
+                }
+            }
+        )
 
         ListItem(
             headlineContent = {
