@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import com.ice.hitomimanager.data.repository.LibraryRepository
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.repository.HitomiMetadataRepository
 import com.ice.hitomimanager.data.local.entity.TagEntity
@@ -54,6 +55,8 @@ data class LibraryUiState(
     val currentDirectoryPath: String = "",
     val directoryFolders: List<LibraryFolderNode> = emptyList(),
     val directoryBooks: List<BookItem> = emptyList(),
+    val directoryContentVersion: Long = 0L,
+    val directoryScrollToken: Long = 0L,
     val books: List<BookItem> = emptyList(),
     val bookSortMode: BookSortMode = BookSortMode.NameAsc,
 
@@ -175,6 +178,7 @@ class AppViewModel(
     private var sourceObserveJob: Job? = null
     private var directoryFolderObserveJob: Job? = null
     private var directoryBookObserveJob: Job? = null
+    private var shouldScrollDirectoryToTop: Boolean = false
     private var tagObserveJob: Job? = null
 
     private var taskObserveJob: Job? = null
@@ -683,6 +687,7 @@ class AppViewModel(
                 books = emptyList()
             )
         }
+        shouldScrollDirectoryToTop = true
         refreshLibraryBooks()
         observeTagItems()
         observeMatchTasks()
@@ -697,6 +702,7 @@ class AppViewModel(
                 currentDirectoryPath = folder.path
             )
         }
+        shouldScrollDirectoryToTop = true
         observeDirectory()
     }
 
@@ -718,6 +724,7 @@ class AppViewModel(
                 it.copy(currentDirectoryPath = parent)
             }
         }
+        shouldScrollDirectoryToTop = true
         observeDirectory()
     }
 
@@ -737,10 +744,20 @@ class AppViewModel(
                 libraryRepository.observeFoldersForSourceIds(sourceIds)
                     .collectLatest { folders ->
                         val roots = folders.filter { it.parentPath.isNullOrBlank() }
+                        val requestScroll = shouldScrollDirectoryToTop
+                        if (requestScroll) {
+                            shouldScrollDirectoryToTop = false
+                        }
                         _libraryState.update {
                             it.copy(
                                 directoryFolders = roots,
                                 directoryBooks = emptyList(),
+                                directoryContentVersion = it.directoryContentVersion + 1L,
+                                directoryScrollToken = if (requestScroll) {
+                                    it.directoryScrollToken + 1L
+                                } else {
+                                    it.directoryScrollToken
+                                },
                                 currentDirectorySourceId = null,
                                 currentDirectoryPath = ""
                             )
@@ -753,27 +770,33 @@ class AppViewModel(
         val parentPath = state.currentDirectoryPath
 
         directoryFolderObserveJob = viewModelScope.launch {
-            libraryRepository.observeChildFolders(concreteSourceId, parentPath)
-                .collectLatest { folders ->
-                    _libraryState.update {
-                        it.copy(directoryFolders = folders)
+            combine(
+                libraryRepository.observeChildFolders(concreteSourceId, parentPath),
+                libraryRepository.observeBooksInFolder(concreteSourceId, parentPath)
+            ) { folders, books ->
+                folders to books
+            }.collectLatest { (folders, books) ->
+                    val requestScroll = shouldScrollDirectoryToTop
+                    if (requestScroll) {
+                        shouldScrollDirectoryToTop = false
                     }
-                }
-        }
-
-        directoryBookObserveJob = viewModelScope.launch {
-            libraryRepository.observeBooksInFolder(concreteSourceId, parentPath)
-                .collectLatest { books ->
                     _libraryState.update { state ->
                         state.copy(
+                            directoryFolders = folders,
                             directoryBooks = sortBooks(
                                 books = books,
                                 mode = state.bookSortMode
-                            )
+                            ),
+                            directoryContentVersion = state.directoryContentVersion + 1L,
+                            directoryScrollToken = if (requestScroll) {
+                                state.directoryScrollToken + 1L
+                            } else {
+                                state.directoryScrollToken
+                            }
                         )
                     }
                     repairMissingCovers(books)
-                }
+            }
         }
     }
 

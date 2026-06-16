@@ -188,6 +188,15 @@ fun LibraryScreen(
         }
     }
 
+    LaunchedEffect(libraryLayoutMode, state.directoryScrollToken) {
+        if (
+            libraryLayoutMode == LibraryLayoutMode.Directory &&
+            state.directoryScrollToken > 0L
+        ) {
+            directoryListState.scrollToItem(0)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
