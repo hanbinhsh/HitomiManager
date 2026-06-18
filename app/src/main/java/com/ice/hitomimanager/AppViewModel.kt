@@ -724,7 +724,6 @@ class AppViewModel(
                 it.copy(currentDirectoryPath = parent)
             }
         }
-        shouldScrollDirectoryToTop = true
         observeDirectory()
     }
 

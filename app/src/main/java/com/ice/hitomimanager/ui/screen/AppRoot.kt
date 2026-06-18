@@ -1,10 +1,14 @@
 package com.ice.hitomimanager.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -37,6 +41,12 @@ fun AppRoot(
     val hitomiWebViewState by viewModel.hitomiWebViewState.collectAsState()
     val settingsState by viewModel.settingsState.collectAsState()
     val matchTaskDetailState by viewModel.matchTaskDetailState.collectAsState()
+    var pendingDetailBookUri by remember {
+        mutableStateOf<String?>(null)
+    }
+    var highlightedBookUri by remember {
+        mutableStateOf<String?>(null)
+    }
 
     NavHost(
         navController = navController,
@@ -97,6 +107,10 @@ fun AppRoot(
                 onToggleLibraryLayoutMode = viewModel::toggleLibraryLayoutMode,
                 onBookSortModeChange = viewModel::setBookSortMode,
                 onTagFilterTabChange = viewModel::setTagFilterTab,
+                highlightedBookUri = highlightedBookUri,
+                onHighlightedBookConsumed = {
+                    highlightedBookUri = null
+                },
                 onOpenMatchTask = { task ->
                     if (task.status == MatchTaskStatus.Failed) {
                         viewModel.startMatchFromTask(task)
@@ -107,6 +121,7 @@ fun AppRoot(
                     }
                 },
                 onOpenBook = { book ->
+                    pendingDetailBookUri = book.uriString
                     viewModel.openBookDetail(book)
                     navController.navigate(Routes.Detail)
                 },
@@ -118,11 +133,21 @@ fun AppRoot(
         }
 
         composable(Routes.Detail) {
+            fun backToLibraryWithHighlight() {
+                highlightedBookUri = detailState.book?.uriString ?: pendingDetailBookUri
+                pendingDetailBookUri = null
+                navController.popBackStack()
+            }
+
+            BackHandler {
+                backToLibraryWithHighlight()
+            }
+
             BookDetailScreen(
                 state = detailState,
                 showTagNamespacePrefix = settingsState.showTagNamespacePrefix,
                 onBack = {
-                    navController.popBackStack()
+                    backToLibraryWithHighlight()
                 },
                 onRead = { book ->
                     viewModel.openBook(book)
@@ -133,6 +158,7 @@ fun AppRoot(
                     navController.navigate(Routes.Match)
                 },
                 onTagClick = { tag ->
+                    pendingDetailBookUri = null
                     viewModel.applyTagFilter(tag)
                     navController.popBackStack(
                         route = Routes.Library,

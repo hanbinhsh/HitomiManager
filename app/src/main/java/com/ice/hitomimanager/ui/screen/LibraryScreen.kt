@@ -1,6 +1,8 @@
 package com.ice.hitomimanager.ui.screen
 
 import android.net.Uri
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -41,6 +43,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +57,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +82,7 @@ import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.LaunchedEffect
@@ -96,6 +101,21 @@ import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.TagFilterTab
 import androidx.compose.material3.Tab
 import kotlinx.coroutines.delay
+
+private data class DirectoryScrollPosition(
+    val index: Int,
+    val offset: Int
+)
+
+private data class DirectoryRestoreRequest(
+    val directoryKey: String,
+    val position: DirectoryScrollPosition,
+    val highlightFolderKey: String?,
+    val minContentVersion: Long
+)
+
+private const val HighlightHoldMillis = 1000L
+private const val HighlightFadeMillis = 450
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -130,6 +150,8 @@ fun LibraryScreen(
     onToggleLibraryLayoutMode: () -> Unit,
     onBookSortModeChange: (BookSortMode) -> Unit,
     onTagFilterTabChange: (TagFilterTab) -> Unit,
+    highlightedBookUri: String?,
+    onHighlightedBookConsumed: () -> Unit,
 ) {
     val libraryListState = rememberLazyListState()
     val libraryGridState = rememberLazyGridState()
@@ -143,6 +165,62 @@ fun LibraryScreen(
     }
     var observedBookSortMode by remember {
         mutableStateOf(state.bookSortMode)
+    }
+    val directoryScrollPositions = remember {
+        mutableMapOf<String, DirectoryScrollPosition>()
+    }
+    val currentDirectoryKey = directoryStateKey(state)
+    var pendingDirectoryRestore by remember {
+        mutableStateOf<DirectoryRestoreRequest?>(null)
+    }
+    var highlightedDirectoryFolderKey by remember {
+        mutableStateOf<String?>(null)
+    }
+    var consumedDirectoryScrollToken by rememberSaveable {
+        mutableStateOf(state.directoryScrollToken)
+    }
+    var pendingBookReturnDirectoryKey by rememberSaveable {
+        mutableStateOf<String?>(null)
+    }
+    var pendingBookReturnDirectoryIndex by rememberSaveable {
+        mutableStateOf(0)
+    }
+    var pendingBookReturnDirectoryOffset by rememberSaveable {
+        mutableStateOf(0)
+    }
+
+    fun rememberCurrentDirectoryPosition() {
+        directoryScrollPositions[currentDirectoryKey] = DirectoryScrollPosition(
+            index = directoryListState.firstVisibleItemIndex,
+            offset = directoryListState.firstVisibleItemScrollOffset
+        )
+    }
+
+    fun openDirectoryWithPositionMemory(folder: LibraryFolderNode) {
+        rememberCurrentDirectoryPosition()
+        onOpenDirectory(folder)
+    }
+
+    fun navigateDirectoryUpWithPositionRestore() {
+        val parentKey = parentDirectoryStateKey(state)
+        if (parentKey != null) {
+            pendingDirectoryRestore = DirectoryRestoreRequest(
+                directoryKey = parentKey,
+                position = directoryScrollPositions[parentKey] ?: DirectoryScrollPosition(0, 0),
+                highlightFolderKey = currentDirectoryFolderKey(state),
+                minContentVersion = state.directoryContentVersion
+            )
+        }
+        onDirectoryUp()
+    }
+
+    fun openBookWithPositionMemory(book: BookItem) {
+        if (state.homeTab == HomeTab.Library && libraryLayoutMode == LibraryLayoutMode.Directory) {
+            pendingBookReturnDirectoryKey = currentDirectoryKey
+            pendingBookReturnDirectoryIndex = directoryListState.firstVisibleItemIndex
+            pendingBookReturnDirectoryOffset = directoryListState.firstVisibleItemScrollOffset
+        }
+        onOpenBook(book)
     }
 
     suspend fun scrollTabToTop(tab: HomeTab) {
@@ -188,13 +266,66 @@ fun LibraryScreen(
         }
     }
 
-    LaunchedEffect(libraryLayoutMode, state.directoryScrollToken) {
+    LaunchedEffect(
+        libraryLayoutMode,
+        currentDirectoryKey,
+        state.directoryContentVersion,
+        pendingDirectoryRestore
+    ) {
+        val request = pendingDirectoryRestore
         if (
             libraryLayoutMode == LibraryLayoutMode.Directory &&
-            state.directoryScrollToken > 0L
+            request != null &&
+            request.directoryKey == currentDirectoryKey &&
+            state.directoryContentVersion > request.minContentVersion
         ) {
+            directoryListState.scrollToItem(
+                index = request.position.index,
+                scrollOffset = request.position.offset
+            )
+            highlightedDirectoryFolderKey = request.highlightFolderKey
+            pendingDirectoryRestore = null
+        }
+    }
+
+    LaunchedEffect(libraryLayoutMode, state.directoryScrollToken) {
+        val token = state.directoryScrollToken
+        if (
+            libraryLayoutMode == LibraryLayoutMode.Directory &&
+            token > consumedDirectoryScrollToken
+        ) {
+            consumedDirectoryScrollToken = token
             directoryListState.scrollToItem(0)
         }
+    }
+
+    LaunchedEffect(highlightedBookUri, libraryLayoutMode, currentDirectoryKey) {
+        val restoreKey = pendingBookReturnDirectoryKey
+        if (
+            highlightedBookUri != null &&
+            libraryLayoutMode == LibraryLayoutMode.Directory &&
+            restoreKey == currentDirectoryKey
+        ) {
+            directoryListState.scrollToItem(
+                index = pendingBookReturnDirectoryIndex,
+                scrollOffset = pendingBookReturnDirectoryOffset
+            )
+            pendingBookReturnDirectoryKey = null
+        }
+    }
+
+    LaunchedEffect(highlightedDirectoryFolderKey) {
+        val highlightedKey = highlightedDirectoryFolderKey ?: return@LaunchedEffect
+        delay(HighlightHoldMillis)
+        if (highlightedDirectoryFolderKey == highlightedKey) {
+            highlightedDirectoryFolderKey = null
+        }
+    }
+
+    LaunchedEffect(highlightedBookUri) {
+        if (highlightedBookUri == null) return@LaunchedEffect
+        delay(HighlightHoldMillis)
+        onHighlightedBookConsumed()
     }
 
     Scaffold(
@@ -328,10 +459,12 @@ fun LibraryScreen(
                     gridState = libraryGridState,
                     onClearTagFilters = onClearTagFilters,
                     onClearSearch = onClearSearch,
-                    onOpenBook = onOpenBook,
+                    onOpenBook = ::openBookWithPositionMemory,
                     onMatchBook = onMatchBook,
-                    onOpenDirectory = onOpenDirectory,
-                    onDirectoryUp = onDirectoryUp
+                    onOpenDirectory = ::openDirectoryWithPositionMemory,
+                    onDirectoryUp = ::navigateDirectoryUpWithPositionRestore,
+                    highlightedDirectoryFolderKey = highlightedDirectoryFolderKey,
+                    highlightedBookUri = highlightedBookUri
                 )
             }
 
@@ -363,8 +496,9 @@ fun LibraryScreen(
                     gridState = searchGridState,
                     onSearchQueryChange = onSearchQueryChange,
                     onClearSearch = onClearSearch,
-                    onOpenBook = onOpenBook,
-                    onMatchBook = onMatchBook
+                    onOpenBook = ::openBookWithPositionMemory,
+                    onMatchBook = onMatchBook,
+                    highlightedBookUri = highlightedBookUri
                 )
             }
 
@@ -486,7 +620,9 @@ private fun LibraryContent(
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit,
     onOpenDirectory: (LibraryFolderNode) -> Unit,
-    onDirectoryUp: () -> Unit
+    onDirectoryUp: () -> Unit,
+    highlightedDirectoryFolderKey: String?,
+    highlightedBookUri: String?
 ) {
     Column(
         modifier = modifier
@@ -532,6 +668,8 @@ private fun LibraryContent(
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
                 onOpenDirectory = onOpenDirectory,
                 onDirectoryUp = onDirectoryUp,
+                highlightedFolderKey = highlightedDirectoryFolderKey,
+                highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
             )
@@ -547,6 +685,7 @@ private fun LibraryContent(
                 listState = listState,
                 gridState = gridState,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
+                highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
             )
@@ -561,6 +700,8 @@ private fun DirectoryContent(
     showRematchButtonInLibrary: Boolean,
     onOpenDirectory: (LibraryFolderNode) -> Unit,
     onDirectoryUp: () -> Unit,
+    highlightedFolderKey: String?,
+    highlightedBookUri: String?,
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
@@ -607,7 +748,14 @@ private fun DirectoryContent(
                 items = state.directoryFolders,
                 key = { folder -> "folder:${folder.sourceId}:${folder.path}" }
             ) { folder ->
+                val folderKey = folderItemKey(folder)
+                val backgroundColor = animatedHighlightColor(
+                    highlighted = highlightedFolderKey == folderKey
+                )
                 ListItem(
+                    colors = ListItemDefaults.colors(
+                        containerColor = backgroundColor
+                    ),
                     leadingContent = {
                         Icon(
                             imageVector = Icons.Filled.FolderOpen,
@@ -641,6 +789,7 @@ private fun DirectoryContent(
                 BookListItem(
                     book = book,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    highlighted = highlightedBookUri == book.uriString,
                     onClick = { onOpenBook(book) },
                     onMatchClick = { onMatchBook(book) }
                 )
@@ -653,6 +802,56 @@ private fun DirectoryContent(
             }
         }
     }
+}
+
+private fun directoryStateKey(state: LibraryUiState): String {
+    return directoryStateKey(
+        selectedSourceScopeKey = state.selectedSourceScopeKey,
+        sourceId = state.currentDirectorySourceId,
+        path = state.currentDirectoryPath
+    )
+}
+
+private fun directoryStateKey(
+    selectedSourceScopeKey: String,
+    sourceId: String?,
+    path: String
+): String {
+    return "$selectedSourceScopeKey:${sourceId.orEmpty()}:$path"
+}
+
+private fun parentDirectoryStateKey(state: LibraryUiState): String? {
+    val sourceId = state.currentDirectorySourceId ?: return null
+    val path = state.currentDirectoryPath
+    return if (path.isBlank()) {
+        val selectedScope = state.sourceScopes.firstOrNull {
+            it.key == state.selectedSourceScopeKey
+        }
+        if (selectedScope?.sourceIds?.singleOrNull() == sourceId) {
+            null
+        } else {
+            directoryStateKey(
+                selectedSourceScopeKey = state.selectedSourceScopeKey,
+                sourceId = null,
+                path = ""
+            )
+        }
+    } else {
+        directoryStateKey(
+            selectedSourceScopeKey = state.selectedSourceScopeKey,
+            sourceId = sourceId,
+            path = path.substringBeforeLast('/', missingDelimiterValue = "")
+        )
+    }
+}
+
+private fun currentDirectoryFolderKey(state: LibraryUiState): String? {
+    val sourceId = state.currentDirectorySourceId ?: return null
+    return "folder:$sourceId:${state.currentDirectoryPath}"
+}
+
+private fun folderItemKey(folder: LibraryFolderNode): String {
+    return "folder:${folder.sourceId}:${folder.path}"
 }
 
 private fun directoryTitle(state: LibraryUiState): String {
@@ -690,6 +889,7 @@ private fun SearchContent(
     onMatchBook: (BookItem) -> Unit,
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
+    highlightedBookUri: String?
 ) {
     Column(
         modifier = modifier
@@ -729,6 +929,7 @@ private fun SearchContent(
             listState = listState,
             gridState = gridState,
             showRematchButtonInLibrary = showRematchButtonInLibrary,
+            highlightedBookUri = highlightedBookUri,
             onOpenBook = onOpenBook,
             onMatchBook = onMatchBook
         )
@@ -1007,6 +1208,7 @@ private fun BookList(
     books: List<BookItem>,
     listState: LazyListState,
     showRematchButtonInLibrary: Boolean,
+    highlightedBookUri: String?,
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
@@ -1024,6 +1226,7 @@ private fun BookList(
             BookListItem(
                 book = book,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
+                highlighted = highlightedBookUri == book.uriString,
                 onClick = {
                     onOpenBook(book)
                 },
@@ -1039,10 +1242,16 @@ private fun BookList(
 private fun BookListItem(
     book: BookItem,
     showRematchButtonInLibrary: Boolean,
+    highlighted: Boolean,
     onClick: () -> Unit,
     onMatchClick: () -> Unit
 ) {
+    val containerColor = animatedHighlightColor(highlighted)
+
     ListItem(
+        colors = ListItemDefaults.colors(
+            containerColor = containerColor
+        ),
         leadingContent = {
             val coverPath = book.coverFilePath
 
@@ -1987,6 +2196,7 @@ private fun BookShelfContent(
     listState: LazyListState,
     gridState: LazyGridState,
     showRematchButtonInLibrary: Boolean,
+    highlightedBookUri: String?,
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
@@ -2002,6 +2212,7 @@ private fun BookShelfContent(
                 books = books,
                 listState = listState,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
+                highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
             )
@@ -2012,6 +2223,7 @@ private fun BookShelfContent(
                 books = books,
                 gridState = gridState,
                 gridColumns = gridColumns,
+                highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook
             )
         }
@@ -2023,6 +2235,7 @@ private fun BookGrid(
     books: List<BookItem>,
     gridState: LazyGridState,
     gridColumns: Int,
+    highlightedBookUri: String?,
     onOpenBook: (BookItem) -> Unit
 ) {
     LazyVerticalGrid(
@@ -2044,6 +2257,7 @@ private fun BookGrid(
         ) { book ->
             GridBookCoverItem(
                 book = book,
+                highlighted = highlightedBookUri == book.uriString,
                 onClick = {
                     onOpenBook(book)
                 }
@@ -2055,8 +2269,11 @@ private fun BookGrid(
 @Composable
 private fun GridBookCoverItem(
     book: BookItem,
+    highlighted: Boolean,
     onClick: () -> Unit
 ) {
+    val overlayColor = animatedHighlightOverlayColor(highlighted)
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2081,7 +2298,47 @@ private fun GridBookCoverItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(overlayColor)
+        )
     }
+}
+
+@Composable
+private fun animatedHighlightColor(
+    highlighted: Boolean
+): Color {
+    val targetColor = if (highlighted) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        Color.Transparent
+    }
+    val color by animateColorAsState(
+        targetValue = targetColor,
+        animationSpec = tween(durationMillis = HighlightFadeMillis),
+        label = "itemHighlight"
+    )
+    return color
+}
+
+@Composable
+private fun animatedHighlightOverlayColor(
+    highlighted: Boolean
+): Color {
+    val targetColor = if (highlighted) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+    } else {
+        Color.Transparent
+    }
+    val color by animateColorAsState(
+        targetValue = targetColor,
+        animationSpec = tween(durationMillis = HighlightFadeMillis),
+        label = "itemHighlightOverlay"
+    )
+    return color
 }
 
 @Composable
