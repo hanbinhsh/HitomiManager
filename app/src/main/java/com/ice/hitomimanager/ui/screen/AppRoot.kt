@@ -78,6 +78,7 @@ fun AppRoot(
     ) {
         composable(Routes.Library) {
             LibraryScreen(
+                distinguishGenderTags = settingsState.distinguishGenderTags,
                 state = libraryState,
                 showTagNamespacePrefix = settingsState.showTagNamespacePrefix,
                 onHomeTabChange = viewModel::setHomeTab,
@@ -146,6 +147,7 @@ fun AppRoot(
             BookDetailScreen(
                 state = detailState,
                 showTagNamespacePrefix = settingsState.showTagNamespacePrefix,
+                distinguishGenderTags = settingsState.distinguishGenderTags,
                 onBack = {
                     backToLibraryWithHighlight()
                 },
@@ -233,6 +235,7 @@ fun AppRoot(
                 onDeleteSource = viewModel::deleteSource,
                 onScanSource = viewModel::scanSource,
                 onShowTagNamespacePrefixChange = viewModel::setShowTagNamespacePrefix,
+                onDistinguishGenderTagsChange = viewModel::setDistinguishGenderTags,
                 onRemoveUnderscoreInMatchTitleChange = viewModel::setRemoveUnderscoreInMatchTitle,
                 onRemoveTrailingNumberSuffixInMatchTitleChange = viewModel::setRemoveTrailingNumberSuffixInMatchTitle,
                 onAutoMatchExactTitleChange = viewModel::setAutoMatchExactTitle,

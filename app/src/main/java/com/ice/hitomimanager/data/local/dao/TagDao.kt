@@ -77,6 +77,27 @@ interface TagDao {
 
     @Query(
         """
+    SELECT
+        'gender:' || LOWER(tag.name) AS tagKey,
+        'tag' AS namespace,
+        MIN(tag.name) AS name,
+        MAX(tag.translatedName) AS translatedName,
+        COUNT(DISTINCT book_tag.bookUriString) AS bookCount
+    FROM tag
+    INNER JOIN book_tag ON tag.`key` = book_tag.tagKey
+    INNER JOIN book ON book.uriString = book_tag.bookUriString
+    WHERE (:sourceCount = 0 OR book.sourceId IN (:sourceIds))
+      AND tag.namespace IN ('male', 'female')
+    GROUP BY LOWER(tag.name)
+    """
+    )
+    fun observeGenderMergedTagCountsForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int
+    ): Flow<List<TagCountItem>>
+
+    @Query(
+        """
     UPDATE book_tag
     SET bookUriString = :newUriString
     WHERE bookUriString = :oldUriString

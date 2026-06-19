@@ -62,6 +62,7 @@ fun SettingsScreen(
     onDeleteSource: (String) -> Unit,
     onScanSource: (String) -> Unit,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
+    onDistinguishGenderTagsChange: (Boolean) -> Unit,
     onRemoveUnderscoreInMatchTitleChange: (Boolean) -> Unit,
     onRemoveTrailingNumberSuffixInMatchTitleChange: (Boolean) -> Unit,
     onAutoMatchExactTitleChange: (Boolean) -> Unit,
@@ -261,6 +262,7 @@ fun SettingsScreen(
                     DisplaySettingsContent(
                         state = state,
                         onShowTagNamespacePrefixChange = onShowTagNamespacePrefixChange,
+                        onDistinguishGenderTagsChange = onDistinguishGenderTagsChange,
                         onShowRematchButtonInLibraryChange = onShowRematchButtonInLibraryChange,
                         onLibraryLayoutModeChange = onLibraryLayoutModeChange,
                         onLibraryGridColumnsChange = onLibraryGridColumnsChange
@@ -528,6 +530,7 @@ private fun SourceSettingsItem(
 private fun DisplaySettingsContent(
     state: SettingsUiState,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
+    onDistinguishGenderTagsChange: (Boolean) -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
     onLibraryLayoutModeChange: (LibraryLayoutMode) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit
@@ -550,6 +553,21 @@ private fun DisplaySettingsContent(
                 Switch(
                     checked = state.showTagNamespacePrefix,
                     onCheckedChange = onShowTagNamespacePrefixChange
+                )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("区分性别标签")
+            },
+            supportingContent = {
+                Text("打开后 male/female 标签分开计数并显示 ♂/♀；关闭后同名标签合并计数、不区分性别。")
+            },
+            trailingContent = {
+                Switch(
+                    checked = state.distinguishGenderTags,
+                    onCheckedChange = onDistinguishGenderTagsChange
                 )
             }
         )

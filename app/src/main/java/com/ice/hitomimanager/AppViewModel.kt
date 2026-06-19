@@ -98,6 +98,10 @@ data class SettingsUiState(
     val librarySources: List<LibrarySource> = emptyList(),
     val showTagNamespacePrefix: Boolean = true,
 
+    // 性别标签区分：开启时 male/female 标签分开计数并显示 ♂/♀；
+    // 关闭时同名标签合并计数、不区分性别
+    val distinguishGenderTags: Boolean = true,
+
     val removeUnderscoreInMatchTitle: Boolean = true,
     val removeTrailingNumberSuffixInMatchTitle: Boolean = true,
 
@@ -226,6 +230,7 @@ class AppViewModel(
         SettingsUiState(
             folderUriString = prefs.getString(KEY_FOLDER_URI, null),
             showTagNamespacePrefix = prefs.getBoolean(KEY_SHOW_TAG_NAMESPACE_PREFIX, true),
+            distinguishGenderTags = prefs.getBoolean(KEY_DISTINGUISH_GENDER_TAGS, true),
             removeUnderscoreInMatchTitle = prefs.getBoolean(KEY_REMOVE_UNDERSCORE_IN_MATCH_TITLE, true),
             removeTrailingNumberSuffixInMatchTitle = prefs.getBoolean(KEY_REMOVE_TRAILING_NUMBER_SUFFIX_IN_MATCH_TITLE, true),
             autoMatchExactTitle = prefs.getBoolean(KEY_AUTO_MATCH_EXACT_TITLE, true),
@@ -471,8 +476,13 @@ class AppViewModel(
             return
         }
 
+        val mergeGenderTags = !_settingsState.value.distinguishGenderTags
+
         tagObserveJob = viewModelScope.launch {
-            libraryRepository.observeTagCountsForSourceIds(sourceIds).collectLatest { tags ->
+            libraryRepository.observeTagCountsForSourceIds(
+                sourceIds = sourceIds,
+                mergeGenderTags = mergeGenderTags
+            ).collectLatest { tags ->
                 val mode = _libraryState.value.tagSortMode
                 val sortedTags = withContext(Dispatchers.Default) {
                     sortTags(
@@ -2733,6 +2743,23 @@ class AppViewModel(
         }
     }
 
+    fun setDistinguishGenderTags(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_DISTINGUISH_GENDER_TAGS, enabled)
+            .apply()
+
+        _settingsState.update {
+            it.copy(distinguishGenderTags = enabled)
+        }
+
+        // 切换合并模式后，原有的性别标签筛选键可能失效，清空筛选并重新统计
+        _libraryState.update {
+            it.copy(selectedTagKeys = emptySet())
+        }
+        observeTagItems()
+        refreshLibraryBooks()
+    }
+
     fun setAutoMatchSingleResult(enabled: Boolean) {
         prefs.edit()
             .putBoolean(KEY_AUTO_MATCH_SINGLE_RESULT, enabled)
@@ -2918,6 +2945,7 @@ class AppViewModel(
         private const val KEY_FOLDER_URI = "folder_uri"
         private const val KEY_SELECTED_SOURCE_SCOPE = "selected_source_scope"
         private const val KEY_SHOW_TAG_NAMESPACE_PREFIX = "show_tag_namespace_prefix"
+        private const val KEY_DISTINGUISH_GENDER_TAGS = "distinguish_gender_tags"
         private const val KEY_REMOVE_UNDERSCORE_IN_MATCH_TITLE = "remove_underscore_in_match_title"
         private const val KEY_REMOVE_TRAILING_NUMBER_SUFFIX_IN_MATCH_TITLE = "remove_trailing_number_suffix_in_match_title"
         private const val KEY_AUTO_MATCH_SINGLE_RESULT = "auto_match_single_result"

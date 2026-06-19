@@ -214,6 +214,21 @@ interface BookDao {
 
     @Query(
         """
+    SELECT DISTINCT book_tag.bookUriString
+    FROM book_tag
+    INNER JOIN book ON book.uriString = book_tag.bookUriString
+    WHERE (:sourceCount = 0 OR book.sourceId IN (:sourceIds))
+      AND book_tag.tagKey IN (:tagKeys)
+    """
+    )
+    fun observeBookUrisByAnyTagForSourceIds(
+        sourceIds: List<String>,
+        sourceCount: Int,
+        tagKeys: List<String>
+    ): Flow<List<String>>
+
+    @Query(
+        """
     SELECT *
     FROM book
     WHERE libraryRootUriString = :libraryRootUriString

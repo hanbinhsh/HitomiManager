@@ -56,6 +56,7 @@ import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 fun BookDetailScreen(
     state: BookDetailUiState,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean = true,
     onBack: () -> Unit,
     onRead: (BookItem) -> Unit,
     onMatch: (BookItem) -> Unit,
@@ -204,6 +205,7 @@ fun BookDetailScreen(
                 title = "作者",
                 tags = state.tags.filter { it.namespace == "artist" },
                 showTagNamespacePrefix = showTagNamespacePrefix,
+                distinguishGenderTags = distinguishGenderTags,
                 onTagClick = onTagClick
             )
 
@@ -211,6 +213,7 @@ fun BookDetailScreen(
                 title = "社团",
                 tags = state.tags.filter { it.namespace == "group" },
                 showTagNamespacePrefix = showTagNamespacePrefix,
+                distinguishGenderTags = distinguishGenderTags,
                 onTagClick = onTagClick
             )
 
@@ -218,6 +221,7 @@ fun BookDetailScreen(
                 title = "系列",
                 tags = state.tags.filter { it.namespace == "series" },
                 showTagNamespacePrefix = showTagNamespacePrefix,
+                distinguishGenderTags = distinguishGenderTags,
                 onTagClick = onTagClick
             )
 
@@ -225,6 +229,7 @@ fun BookDetailScreen(
                 title = "角色",
                 tags = state.tags.filter { it.namespace == "character" },
                 showTagNamespacePrefix = showTagNamespacePrefix,
+                distinguishGenderTags = distinguishGenderTags,
                 onTagClick = onTagClick
             )
 
@@ -239,6 +244,7 @@ fun BookDetailScreen(
                             it.namespace != "type"
                 },
                 showTagNamespacePrefix = showTagNamespacePrefix,
+                distinguishGenderTags = distinguishGenderTags,
                 onTagClick = onTagClick
             )
         }
@@ -429,6 +435,7 @@ private fun TagSection(
     title: String,
     tags: List<TagEntity>,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean,
     onTagClick: (TagEntity) -> Unit
 ) {
     ElevatedCard(
@@ -457,6 +464,7 @@ private fun TagSection(
                         CompactAssistTagChip(
                             tag = tag,
                             showTagNamespacePrefix = showTagNamespacePrefix,
+                            distinguishGenderTags = distinguishGenderTags,
                             onTagClick = onTagClick
                         )
                     }
@@ -468,14 +476,17 @@ private fun TagSection(
 
 private fun formatTagLabel(
     tag: TagEntity,
-    showNamespace: Boolean
+    showNamespace: Boolean,
+    distinguishGenderTags: Boolean
 ): String {
     val name = tag.translatedName ?: tag.name
 
-    return if (showNamespace) {
-        "[${tag.namespace}] $name"
-    } else {
-        name
+    return when {
+        // 命名空间前缀优先级最高，显示 [male]/[female] 等文字前缀
+        showNamespace -> "[${tag.namespace}] $name"
+        distinguishGenderTags && tag.namespace == "male" -> "♂ $name"
+        distinguishGenderTags && tag.namespace == "female" -> "♀ $name"
+        else -> name
     }
 }
 
@@ -485,6 +496,7 @@ private fun MetadataGroupSection(
     title: String,
     tags: List<TagEntity>,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean,
     onTagClick: (TagEntity) -> Unit
 ) {
     if (tags.isEmpty()) return
@@ -509,6 +521,7 @@ private fun MetadataGroupSection(
                     CompactAssistTagChip(
                         tag = tag,
                         showTagNamespacePrefix = showTagNamespacePrefix,
+                        distinguishGenderTags = distinguishGenderTags,
                         onTagClick = onTagClick
                     )
                 }
@@ -521,6 +534,7 @@ private fun MetadataGroupSection(
 private fun CompactAssistTagChip(
     tag: TagEntity,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean,
     onTagClick: (TagEntity) -> Unit
 ) {
     CompositionLocalProvider(
@@ -534,7 +548,8 @@ private fun CompactAssistTagChip(
                 Text(
                     text = formatTagLabel(
                         tag = tag,
-                        showNamespace = showTagNamespacePrefix
+                        showNamespace = showTagNamespacePrefix,
+                        distinguishGenderTags = distinguishGenderTags
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,

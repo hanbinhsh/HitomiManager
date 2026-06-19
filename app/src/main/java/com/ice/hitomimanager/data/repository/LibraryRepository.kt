@@ -472,18 +472,38 @@ class LibraryRepository(
     }
 
     fun observeTagCountsForSourceIds(
-        sourceIds: List<String>
+        sourceIds: List<String>,
+        mergeGenderTags: Boolean = false
     ): Flow<List<TagCountItem>> {
+        if (!mergeGenderTags) {
+            return combine(
+                tagDao.observeTagCountsForSourceIds(sourceIds, sourceIds.size),
+                bookDao.observeLanguageFacetCountsForSourceIds(sourceIds, sourceIds.size),
+                bookDao.observeTypeFacetCountsForSourceIds(sourceIds, sourceIds.size)
+            ) { tagCounts, languageCounts, typeCounts ->
+                val normalTags = tagCounts.filterNot {
+                    it.namespace == "language" || it.namespace == "type"
+                }
+
+                normalTags + languageCounts + typeCounts
+            }
+        }
+
+        // 合并性别：用按名称去重的性别合并计数替换 male/female 逐键计数
         return combine(
             tagDao.observeTagCountsForSourceIds(sourceIds, sourceIds.size),
             bookDao.observeLanguageFacetCountsForSourceIds(sourceIds, sourceIds.size),
-            bookDao.observeTypeFacetCountsForSourceIds(sourceIds, sourceIds.size)
-        ) { tagCounts, languageCounts, typeCounts ->
-            val normalTags = tagCounts.filterNot {
-                it.namespace == "language" || it.namespace == "type"
+            bookDao.observeTypeFacetCountsForSourceIds(sourceIds, sourceIds.size),
+            tagDao.observeGenderMergedTagCountsForSourceIds(sourceIds, sourceIds.size)
+        ) { tagCounts, languageCounts, typeCounts, genderMerged ->
+            val nonGenderTags = tagCounts.filterNot {
+                it.namespace == "language" ||
+                        it.namespace == "type" ||
+                        it.namespace == "male" ||
+                        it.namespace == "female"
             }
 
-            normalTags + languageCounts + typeCounts
+            nonGenderTags + genderMerged + languageCounts + typeCounts
         }
     }
 
@@ -527,8 +547,11 @@ class LibraryRepository(
             return observeBooksForSourceIds(sourceIds)
         }
 
+        val genderKeys = tagKeys.filter { isGenderMergedKey(it) }
         val facetKeys = tagKeys.filter { isFacetTagKey(it) }
-        val normalTagKeys = tagKeys.filterNot { isFacetTagKey(it) }
+        val normalTagKeys = tagKeys.filterNot {
+            isFacetTagKey(it) || isGenderMergedKey(it)
+        }
 
         val baseFlow = if (normalTagKeys.isEmpty()) {
             observeBooksForSourceIds(sourceIds)
@@ -543,17 +566,46 @@ class LibraryRepository(
             }
         }
 
-        return baseFlow.map { books ->
-            books.filter { book ->
-                facetKeys.all { key ->
-                    bookMatchesFacetKey(book, key)
+        if (genderKeys.isEmpty()) {
+            return baseFlow.map { books ->
+                books.filter { book ->
+                    facetKeys.all { key ->
+                        bookMatchesFacetKey(book, key)
+                    }
                 }
+            }
+        }
+
+        // 合并性别筛选：每个合并键匹配 male/female 任一（组内 OR），多个键之间 AND
+        val genderMemberFlows = genderKeys.map { key ->
+            val name = key.removePrefix("gender:")
+            val members = listOf(
+                makeTagKey("male", name),
+                makeTagKey("female", name)
+            )
+            bookDao.observeBookUrisByAnyTagForSourceIds(
+                sourceIds = sourceIds,
+                sourceCount = sourceIds.size,
+                tagKeys = members
+            ).map { it.toSet() }
+        }
+
+        val genderSetsFlow = combine(genderMemberFlows) { it.toList() }
+
+        return combine(baseFlow, genderSetsFlow) { books, genderSets ->
+            books.filter { book ->
+                facetKeys.all { key -> bookMatchesFacetKey(book, key) } &&
+                        genderSets.all { uris -> book.uriString in uris }
             }
         }
     }
 
     private fun isFacetTagKey(key: String): Boolean {
         return key.startsWith("language:") || key.startsWith("type:")
+    }
+
+    private fun isGenderMergedKey(key: String): Boolean {
+        return key.startsWith("gender:")
     }
 
     private fun bookMatchesFacetKey(

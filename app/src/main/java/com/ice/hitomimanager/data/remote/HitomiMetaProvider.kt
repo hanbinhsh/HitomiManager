@@ -124,8 +124,8 @@ class HitomiMetaProvider {
             if (name.isBlank()) continue
 
             val namespace = when {
-                item.optBoolean("female", false) -> "female"
-                item.optBoolean("male", false) -> "male"
+                isTruthy(item, "female") -> "female"
+                isTruthy(item, "male") -> "male"
                 else -> "tag"
             }
 
@@ -136,5 +136,22 @@ class HitomiMetaProvider {
         }
 
         return result.distinctBy { "${it.namespace}:${it.name}" }
+    }
+
+    /**
+     * hitomi 的 tags 里 male/female 字段是字符串 "1"（或 ""），而非 JSON 布尔值，
+     * org.json 的 optBoolean 只识别 "true"/"false"，会把 "1" 当成 false。
+     * 这里统一按 "1"/1/true 判定为真。
+     */
+    private fun isTruthy(
+        obj: JSONObject,
+        key: String
+    ): Boolean {
+        return when (val value = obj.opt(key)) {
+            is Boolean -> value
+            is Number -> value.toInt() != 0
+            is String -> value == "1" || value.equals("true", ignoreCase = true)
+            else -> false
+        }
     }
 }

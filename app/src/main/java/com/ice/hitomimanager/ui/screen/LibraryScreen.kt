@@ -122,6 +122,7 @@ private const val HighlightFadeMillis = 450
 fun LibraryScreen(
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean = true,
     onHomeTabChange: (HomeTab) -> Unit,
     onSourceScopeChange: (String) -> Unit,
     onOpenDirectory: (LibraryFolderNode) -> Unit,
@@ -475,6 +476,7 @@ fun LibraryScreen(
                         .padding(paddingValues),
                     state = state,
                     showTagNamespacePrefix = showTagNamespacePrefix,
+                    distinguishGenderTags = distinguishGenderTags,
                     listState = tagListState,
                     onToggleTag = onToggleTag,
                     onClearTagFilters = onClearTagFilters,
@@ -942,6 +944,7 @@ private fun TagFilterContent(
     modifier: Modifier,
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean,
     listState: LazyListState,
     onToggleTag: (TagCountItem) -> Unit,
     onClearTagFilters: () -> Unit,
@@ -1104,6 +1107,7 @@ private fun TagFilterContent(
                                 tag = tag,
                                 selected = tag.tagKey in state.selectedTagKeys,
                                 showTagNamespacePrefix = showTagNamespacePrefix,
+                                distinguishGenderTags = distinguishGenderTags,
                                 onToggleTag = onToggleTag
                             )
                         }
@@ -1343,14 +1347,17 @@ private fun EmptyHint(
 
 private fun formatTagLabel(
     tag: TagCountItem,
-    showNamespace: Boolean
+    showNamespace: Boolean,
+    distinguishGenderTags: Boolean
 ): String {
     val name = tag.translatedName ?: tag.name
 
-    return if (showNamespace) {
-        "[${tag.namespace}] $name"
-    } else {
-        name
+    return when {
+        // 命名空间前缀优先级最高，显示 [male]/[female] 等文字前缀
+        showNamespace -> "[${tag.namespace}] $name"
+        distinguishGenderTags && tag.namespace == "male" -> "♂ $name"
+        distinguishGenderTags && tag.namespace == "female" -> "♀ $name"
+        else -> name
     }
 }
 
@@ -2164,6 +2171,7 @@ private fun CompactFilterTagChip(
     tag: TagCountItem,
     selected: Boolean,
     showTagNamespacePrefix: Boolean,
+    distinguishGenderTags: Boolean,
     onToggleTag: (TagCountItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2177,7 +2185,7 @@ private fun CompactFilterTagChip(
             },
             label = {
                 Text(
-                    text = "${formatTagLabel(tag, showTagNamespacePrefix)} (${tag.bookCount})",
+                    text = "${formatTagLabel(tag, showTagNamespacePrefix, distinguishGenderTags)} (${tag.bookCount})",
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
