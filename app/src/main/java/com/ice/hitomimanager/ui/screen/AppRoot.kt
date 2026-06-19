@@ -286,7 +286,13 @@ fun AppRoot(
                         }
                     }
                 },
-                onMarkSkipped = viewModel::markCurrentMatchTaskSkipped
+                onMarkSkipped = viewModel::markCurrentMatchTaskSkipped,
+                onSwipeToPrevious = {
+                    viewModel.openAdjacentMatchTask(forward = false)
+                },
+                onSwipeToNext = {
+                    viewModel.openAdjacentMatchTask(forward = true)
+                }
             )
         }
     }

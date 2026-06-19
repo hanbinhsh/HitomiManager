@@ -1453,6 +1453,30 @@ class AppViewModel(
         }
     }
 
+    /**
+     * 在当前任务列表中切换到上一条 / 下一条匹配任务。
+     * forward = true 表示下一条（列表中后一项），false 表示上一条。
+     * 返回是否成功切换（用于界面边界提示）。
+     */
+    fun openAdjacentMatchTask(forward: Boolean): Boolean {
+        val current = _matchTaskDetailState.value.task ?: return false
+        if (_matchTaskDetailState.value.isBinding ||
+            _matchTaskDetailState.value.isRefreshing
+        ) {
+            return false
+        }
+
+        val list = _libraryState.value.matchTasks
+        val index = list.indexOfFirst { it.id == current.id }
+        if (index < 0) return false
+
+        val target = list.getOrNull(if (forward) index + 1 else index - 1)
+            ?: return false
+
+        openMatchTaskDetail(target)
+        return true
+    }
+
     fun bindMatchTaskCandidate(
         candidate: MatchCandidateEntity,
         onAutoAdvance: (MatchTaskEntity?) -> Unit = {}

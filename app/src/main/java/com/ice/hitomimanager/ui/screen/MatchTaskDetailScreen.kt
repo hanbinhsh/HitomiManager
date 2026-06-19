@@ -3,6 +3,7 @@ package com.ice.hitomimanager.ui.screen
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -34,11 +35,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -56,7 +61,9 @@ fun MatchTaskDetailScreen(
     onBindCandidate: (MatchCandidateEntity) -> Unit,
     onOpenMatchPage: () -> Unit,
     onReadTask: () -> Unit,
-    onMarkSkipped: () -> Unit
+    onMarkSkipped: () -> Unit,
+    onSwipeToPrevious: () -> Unit = {},
+    onSwipeToNext: () -> Unit = {}
 ) {
     Scaffold(
         topBar = {
@@ -92,10 +99,32 @@ fun MatchTaskDetailScreen(
             return@Scaffold
         }
 
+        val currentOnSwipeToPrevious by rememberUpdatedState(onSwipeToPrevious)
+        val currentOnSwipeToNext by rememberUpdatedState(onSwipeToNext)
+        val swipeThresholdPx = with(LocalDensity.current) { 80.dp.toPx() }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
+                .padding(paddingValues)
+                .pointerInput(task.id) {
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDrag = 0f },
+                        onHorizontalDrag = { _, dragAmount ->
+                            totalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            if (totalDrag <= -swipeThresholdPx) {
+                                // 向左滑动 -> 下一条
+                                currentOnSwipeToNext()
+                            } else if (totalDrag >= swipeThresholdPx) {
+                                // 向右滑动 -> 上一条
+                                currentOnSwipeToPrevious()
+                            }
+                        }
+                    )
+                },
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
