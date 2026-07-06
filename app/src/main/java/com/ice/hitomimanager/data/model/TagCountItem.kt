@@ -1,5 +1,8 @@
 package com.ice.hitomimanager.data.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class TagCountItem(
     val tagKey: String,
     val namespace: String,

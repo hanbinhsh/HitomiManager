@@ -136,6 +136,20 @@ object ComicArchiveReader {
 
         val outFile = File(dir, "page_$pageIndex.$ext")
 
+        if (outFile.exists() && outFile.length() > 0L) {
+            val resolution = readImageResolution(outFile)
+            return@withContext ExtractedPage(
+                file = outFile,
+                info = PageInfo(
+                    entryName = entryName,
+                    modifiedTimeMillis = outFile.lastModified().takeIf { it > 0L },
+                    sizeBytes = outFile.length(),
+                    width = resolution.first,
+                    height = resolution.second
+                )
+            )
+        }
+
         var found = false
         var modifiedTimeMillis: Long? = null
         var sizeFromZip: Long = -1L

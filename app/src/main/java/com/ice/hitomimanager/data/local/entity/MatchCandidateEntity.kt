@@ -1,9 +1,11 @@
 package com.ice.hitomimanager.data.local.entity
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+@Immutable
 @Entity(
     tableName = "match_candidate",
     indices = [

@@ -4,8 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -34,13 +34,13 @@ fun AppRoot(
 ) {
     val navController = rememberNavController()
 
-    val libraryState by viewModel.libraryState.collectAsState()
-    val detailState by viewModel.bookDetailState.collectAsState()
-    val readerState by viewModel.readerState.collectAsState()
-    val matchState by viewModel.matchState.collectAsState()
-    val hitomiWebViewState by viewModel.hitomiWebViewState.collectAsState()
-    val settingsState by viewModel.settingsState.collectAsState()
-    val matchTaskDetailState by viewModel.matchTaskDetailState.collectAsState()
+    val libraryState by viewModel.libraryState.collectAsStateWithLifecycle()
+    val detailState by viewModel.bookDetailState.collectAsStateWithLifecycle()
+    val readerState by viewModel.readerState.collectAsStateWithLifecycle()
+    val matchState by viewModel.matchState.collectAsStateWithLifecycle()
+    val hitomiWebViewState by viewModel.hitomiWebViewState.collectAsStateWithLifecycle()
+    val settingsState by viewModel.settingsState.collectAsStateWithLifecycle()
+    val matchTaskDetailState by viewModel.matchTaskDetailState.collectAsStateWithLifecycle()
     var pendingDetailBookUri by remember {
         mutableStateOf<String?>(null)
     }
@@ -97,6 +97,7 @@ fun AppRoot(
                 onMatchTaskFilterChange = viewModel::setMatchTaskFilter,
                 onRetryFailedMatchTasks = viewModel::retryFailedMatchTasks,
                 showRematchButtonInLibrary = settingsState.showRematchButtonInLibrary,
+                showGridCoverPlayButton = settingsState.showGridCoverPlayButton,
                 onRetryFailedExceptNoCandidates = viewModel::retryFailedMatchTasksExceptNoCandidates,
                 onStartBatchMatch = viewModel::startBatchMatchUnmatched,
                 onSkipMatchTask = viewModel::skipMatchTaskFromList,
@@ -123,8 +124,18 @@ fun AppRoot(
                 },
                 onOpenBook = { book ->
                     pendingDetailBookUri = book.uriString
-                    viewModel.openBookDetail(book)
-                    navController.navigate(Routes.Detail)
+                    if (settingsState.openBookDirectlyInReader) {
+                        viewModel.openBook(book)
+                        navController.navigate(Routes.Reader)
+                    } else {
+                        viewModel.openBookDetail(book)
+                        navController.navigate(Routes.Detail)
+                    }
+                },
+                onReadBook = { book ->
+                    pendingDetailBookUri = book.uriString
+                    viewModel.openBook(book)
+                    navController.navigate(Routes.Reader)
                 },
                 onMatchBook = { book ->
                     viewModel.startMatch(book)
@@ -179,7 +190,18 @@ fun AppRoot(
                 onPageChanged = viewModel::onReaderPageChanged,
                 onPagePreviewRequested = viewModel::ensureReaderPageLoaded,
                 onBackToDetail = {
-                    navController.popBackStack()
+                    val book = readerState.book
+                    if (settingsState.openBookDirectlyInReader && book != null) {
+                        pendingDetailBookUri = book.uriString
+                        viewModel.openBookDetail(book)
+                        navController.navigate(Routes.Detail) {
+                            popUpTo(Routes.Reader) {
+                                inclusive = true
+                            }
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
                 }
             )
         }
@@ -249,6 +271,8 @@ fun AppRoot(
                 onImportDatabasePicked = viewModel::importDatabase,
                 onCleanupMissingRecords = viewModel::cleanupMissingFromConfiguredSources,
                 onShowRematchButtonInLibraryChange = viewModel::setShowRematchButtonInLibrary,
+                onOpenBookDirectlyInReaderChange = viewModel::setOpenBookDirectlyInReader,
+                onShowGridCoverPlayButtonChange = viewModel::setShowGridCoverPlayButton,
                 onLibraryLayoutModeChange = viewModel::setLibraryLayoutMode,
                 onLibraryGridColumnsChange = viewModel::setLibraryGridColumns,
                 onFilteredMatchLanguagesChange = viewModel::setFilteredMatchLanguages,

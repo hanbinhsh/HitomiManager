@@ -40,7 +40,6 @@ class LibraryRepository(
     private var db = AppDatabase.get(context)
     private var bookDao = db.bookDao()
     private var tagDao = db.tagDao()
-    private var sourceDao = db.librarySourceDao()
     private val scanner = DocumentTreeScanner(context)
     private val coverCache = CoverCache(context)
 
@@ -50,25 +49,24 @@ class LibraryRepository(
         db = AppDatabase.get(context)
         bookDao = db.bookDao()
         tagDao = db.tagDao()
-        sourceDao = db.librarySourceDao()
         matchTaskDao = db.matchTaskDao()
     }
 
     fun observeSources(): Flow<List<LibrarySource>> {
-        return sourceDao.observeSources().map { list ->
+        return bookDao.observeSources().map { list ->
             list.map { it.toLibrarySource() }
         }
     }
 
     suspend fun getSources(): List<LibrarySource> {
-        return sourceDao.getSources().map { it.toLibrarySource() }
+        return bookDao.getSources().map { it.toLibrarySource() }
     }
 
     suspend fun ensureLegacyLocalSource(rootUriString: String?) {
         if (rootUriString.isNullOrBlank()) return
-        if (sourceDao.getSourceByRoot(rootUriString) != null) return
+        if (bookDao.getSourceByRoot(rootUriString) != null) return
         val now = System.currentTimeMillis()
-        sourceDao.upsertSource(
+        bookDao.upsertSource(
             LibrarySource(
                 id = rootUriString,
                 name = localDisplayName(Uri.parse(rootUriString)),
@@ -83,7 +81,7 @@ class LibraryRepository(
     suspend fun addOrUpdateLocalSource(uri: Uri): LibrarySource {
         val uriString = uri.toString()
         val now = System.currentTimeMillis()
-        val old = sourceDao.getSourceByRoot(uriString)?.toLibrarySource()
+        val old = bookDao.getSourceByRoot(uriString)?.toLibrarySource()
         val source = LibrarySource(
             id = old?.id ?: uriString,
             name = old?.name ?: localDisplayName(uri),
@@ -93,27 +91,27 @@ class LibraryRepository(
             updatedAt = now,
             lastCompletedScanAt = old?.lastCompletedScanAt
         )
-        sourceDao.upsertSource(source.toEntity())
+        bookDao.upsertSource(source.toEntity())
         return source
     }
 
     suspend fun renameSource(sourceId: String, name: String): LibrarySource {
-        val old = sourceDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
+        val old = bookDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
         val fixedName = name.trim()
         require(fixedName.isNotBlank()) { "目录名称不能为空" }
         val source = old.copy(
             name = fixedName,
             updatedAt = System.currentTimeMillis()
         )
-        sourceDao.upsertSource(source.toEntity())
-        sourceDao.updateFolderSourceName(sourceId, fixedName)
+        bookDao.upsertSource(source.toEntity())
+        bookDao.updateFolderSourceName(sourceId, fixedName)
         return source
     }
 
     suspend fun deleteSource(sourceId: String) {
         db.withTransaction {
-            sourceDao.deleteFoldersForSource(sourceId)
-            sourceDao.deleteSource(sourceId)
+            bookDao.deleteFoldersForSource(sourceId)
+            bookDao.deleteSource(sourceId)
         }
     }
 
@@ -123,12 +121,12 @@ class LibraryRepository(
     }
 
     fun observeChildFolders(sourceId: String, parentPath: String): Flow<List<LibraryFolderNode>> {
-        return sourceDao.observeChildFolders(sourceId, parentPath)
+        return bookDao.observeChildFolders(sourceId, parentPath)
             .map { list -> list.map { it.toNode() } }
     }
 
     fun observeFoldersForSourceIds(sourceIds: List<String>): Flow<List<LibraryFolderNode>> {
-        return sourceDao.observeFoldersForSourceIds(sourceIds, sourceIds.size)
+        return bookDao.observeFoldersForSourceIds(sourceIds, sourceIds.size)
             .map { list -> list.map { it.toNode() } }
     }
 
@@ -692,7 +690,7 @@ class LibraryRepository(
         sourceId: String,
         onProgress: (ScanProgress) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
-        val source = sourceDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
+        val source = bookDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
         val scanStartedAt = System.currentTimeMillis()
         val rootUriString = source.rootUriString
         val scannedLibrary = scanner.scan(
@@ -701,11 +699,13 @@ class LibraryRepository(
         )
         val now = System.currentTimeMillis()
 
-        for (scanned in scannedLibrary.books) {
+        // 分块批量事务：每块共用一个事务，显著减少逐本提交开销
+        scannedLibrary.books.chunked(SCAN_TX_CHUNK).forEach { chunk ->
             db.withTransaction {
-                val oldBySameUri = bookDao.findByUri(scanned.uriString)
+                chunk.forEach { scanned ->
+                    val oldBySameUri = bookDao.findByUri(scanned.uriString)
 
-                if (oldBySameUri != null) {
+                    if (oldBySameUri != null) {
                     val coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath
 
                     val entity = oldBySameUri.copy(
@@ -722,7 +722,7 @@ class LibraryRepository(
                     )
 
                     bookDao.upsert(entity)
-                    return@withTransaction
+                    return@forEach
                 }
 
                 val movedOld = bookDao.findReusableMovedBook(
@@ -762,7 +762,7 @@ class LibraryRepository(
                         updatedAt = now
                     )
 
-                    return@withTransaction
+                    return@forEach
                 }
 
                 val newEntity = BookEntity(
@@ -780,12 +780,13 @@ class LibraryRepository(
                     lastSeenAt = scanStartedAt
                 )
 
-                bookDao.upsert(newEntity)
+                    bookDao.upsert(newEntity)
+                }
             }
         }
 
         db.withTransaction {
-            sourceDao.deleteFoldersForSource(source.id)
+            bookDao.deleteFoldersForSource(source.id)
             val folders = scannedLibrary.folders.map { folder ->
                 LibraryFolderEntity(
                     sourceId = source.id,
@@ -797,9 +798,9 @@ class LibraryRepository(
                 )
             }
             if (folders.isNotEmpty()) {
-                sourceDao.upsertFolders(folders)
+                bookDao.upsertFolders(folders)
             }
-            sourceDao.upsertSource(
+            bookDao.upsertSource(
                 source.copy(
                     updatedAt = now,
                     lastCompletedScanAt = scanStartedAt
@@ -959,7 +960,7 @@ class LibraryRepository(
     suspend fun cleanupMissingFromConfiguredSources(
         sourceIds: List<String>
     ): Int = withContext(Dispatchers.IO) {
-        val configuredSources = sourceDao.getSources().map { it.toLibrarySource() }
+        val configuredSources = bookDao.getSources().map { it.toLibrarySource() }
         val configuredIds = configuredSources.map { it.id }
         val targetSources = if (sourceIds.isEmpty()) {
             configuredSources
@@ -1028,5 +1029,10 @@ class LibraryRepository(
         name: String
     ): String {
         return "${namespace.lowercase()}:${name.lowercase()}"
+    }
+
+    private companion object {
+        // 扫描入库时每个事务处理的书本数量
+        private const val SCAN_TX_CHUNK = 200
     }
 }

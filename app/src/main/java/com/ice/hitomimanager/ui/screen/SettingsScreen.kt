@@ -77,6 +77,8 @@ fun SettingsScreen(
     onCleanupMissingRecords: () -> Unit,
     onOpenTasks: () -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onOpenBookDirectlyInReaderChange: (Boolean) -> Unit,
+    onShowGridCoverPlayButtonChange: (Boolean) -> Unit,
     onLibraryLayoutModeChange: (LibraryLayoutMode) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit,
     onFilteredMatchLanguagesChange: (String) -> Unit,
@@ -264,6 +266,8 @@ fun SettingsScreen(
                         onShowTagNamespacePrefixChange = onShowTagNamespacePrefixChange,
                         onDistinguishGenderTagsChange = onDistinguishGenderTagsChange,
                         onShowRematchButtonInLibraryChange = onShowRematchButtonInLibraryChange,
+                        onOpenBookDirectlyInReaderChange = onOpenBookDirectlyInReaderChange,
+                        onShowGridCoverPlayButtonChange = onShowGridCoverPlayButtonChange,
                         onLibraryLayoutModeChange = onLibraryLayoutModeChange,
                         onLibraryGridColumnsChange = onLibraryGridColumnsChange
                     )
@@ -532,6 +536,8 @@ private fun DisplaySettingsContent(
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
     onDistinguishGenderTagsChange: (Boolean) -> Unit,
     onShowRematchButtonInLibraryChange: (Boolean) -> Unit,
+    onOpenBookDirectlyInReaderChange: (Boolean) -> Unit,
+    onShowGridCoverPlayButtonChange: (Boolean) -> Unit,
     onLibraryLayoutModeChange: (LibraryLayoutMode) -> Unit,
     onLibraryGridColumnsChange: (Int) -> Unit
 ) {
@@ -628,6 +634,36 @@ private fun DisplaySettingsContent(
                 Switch(
                     checked = state.showRematchButtonInLibrary,
                     onCheckedChange = onShowRematchButtonInLibraryChange
+                )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("点击作品直接阅读")
+            },
+            supportingContent = {
+                Text("开启后，从主页点击漫画会直接进入阅读器；详情页仍可在阅读器第一页向右滑动打开。")
+            },
+            trailingContent = {
+                Switch(
+                    checked = state.openBookDirectlyInReader,
+                    onCheckedChange = onOpenBookDirectlyInReaderChange
+                )
+            }
+        )
+
+        ListItem(
+            headlineContent = {
+                Text("网格封面显示阅读按钮")
+            },
+            supportingContent = {
+                Text("开启后，网格模式每个封面右下角显示阅读按钮，点击后直接进入阅读器。")
+            },
+            trailingContent = {
+                Switch(
+                    checked = state.showGridCoverPlayButton,
+                    onCheckedChange = onShowGridCoverPlayButtonChange
                 )
             }
         )

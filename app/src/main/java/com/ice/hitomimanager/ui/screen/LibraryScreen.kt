@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -144,6 +145,7 @@ fun LibraryScreen(
     onRetryMatchTask: (MatchTaskEntity) -> Unit,
     onRetryFailedMatchTasks: () -> Unit,
     showRematchButtonInLibrary: Boolean,
+    showGridCoverPlayButton: Boolean,
     onRetryFailedExceptNoCandidates: () -> Unit,
     onStartBatchMatch: () -> Unit,
     libraryLayoutMode: LibraryLayoutMode,
@@ -153,6 +155,7 @@ fun LibraryScreen(
     onTagFilterTabChange: (TagFilterTab) -> Unit,
     highlightedBookUri: String?,
     onHighlightedBookConsumed: () -> Unit,
+    onReadBook: (BookItem) -> Unit,
 ) {
     val libraryListState = rememberLazyListState()
     val libraryGridState = rememberLazyGridState()
@@ -453,6 +456,7 @@ fun LibraryScreen(
                     state = state,
                     showTagNamespacePrefix = showTagNamespacePrefix,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    showGridCoverPlayButton = showGridCoverPlayButton,
                     libraryLayoutMode = libraryLayoutMode,
                     libraryGridColumns = libraryGridColumns,
                     listState = libraryListState,
@@ -461,6 +465,7 @@ fun LibraryScreen(
                     onClearTagFilters = onClearTagFilters,
                     onClearSearch = onClearSearch,
                     onOpenBook = ::openBookWithPositionMemory,
+                    onReadBook = onReadBook,
                     onMatchBook = onMatchBook,
                     onOpenDirectory = ::openDirectoryWithPositionMemory,
                     onDirectoryUp = ::navigateDirectoryUpWithPositionRestore,
@@ -492,6 +497,7 @@ fun LibraryScreen(
                         .padding(paddingValues),
                     state = state,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
+                    showGridCoverPlayButton = showGridCoverPlayButton,
                     libraryLayoutMode = libraryLayoutMode,
                     libraryGridColumns = libraryGridColumns,
                     listState = searchListState,
@@ -499,6 +505,7 @@ fun LibraryScreen(
                     onSearchQueryChange = onSearchQueryChange,
                     onClearSearch = onClearSearch,
                     onOpenBook = ::openBookWithPositionMemory,
+                    onReadBook = onReadBook,
                     onMatchBook = onMatchBook,
                     highlightedBookUri = highlightedBookUri
                 )
@@ -612,6 +619,7 @@ private fun LibraryContent(
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
     showRematchButtonInLibrary: Boolean,
+    showGridCoverPlayButton: Boolean,
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
     listState: LazyListState,
@@ -620,6 +628,7 @@ private fun LibraryContent(
     onClearTagFilters: () -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit,
     onOpenDirectory: (LibraryFolderNode) -> Unit,
     onDirectoryUp: () -> Unit,
@@ -687,8 +696,10 @@ private fun LibraryContent(
                 listState = listState,
                 gridState = gridState,
                 showRematchButtonInLibrary = showRematchButtonInLibrary,
+                showGridCoverPlayButton = showGridCoverPlayButton,
                 highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook,
+                onReadBook = onReadBook,
                 onMatchBook = onMatchBook
             )
         }
@@ -707,10 +718,16 @@ private fun DirectoryContent(
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
-    val books = if (state.currentDirectorySourceId == null) {
-        state.books.filter { it.parentPath.isNullOrBlank() }
-    } else {
+    val books = remember(
+        state.currentDirectorySourceId,
+        state.books,
         state.directoryBooks
+    ) {
+        if (state.currentDirectorySourceId == null) {
+            state.books.filter { it.parentPath.isNullOrBlank() }
+        } else {
+            state.directoryBooks
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -883,11 +900,13 @@ private fun SearchContent(
     modifier: Modifier,
     state: LibraryUiState,
     showRematchButtonInLibrary: Boolean,
+    showGridCoverPlayButton: Boolean,
     listState: LazyListState,
     gridState: LazyGridState,
     onSearchQueryChange: (String) -> Unit,
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit,
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
@@ -931,8 +950,10 @@ private fun SearchContent(
             listState = listState,
             gridState = gridState,
             showRematchButtonInLibrary = showRematchButtonInLibrary,
+            showGridCoverPlayButton = showGridCoverPlayButton,
             highlightedBookUri = highlightedBookUri,
             onOpenBook = onOpenBook,
+            onReadBook = onReadBook,
             onMatchBook = onMatchBook
         )
     }
@@ -1292,15 +1313,22 @@ private fun BookListItem(
             )
         },
         supportingContent = {
-            val info = if (book.sourceGalleryId != null) {
-                listOfNotNull(
-                    book.language,
-                    book.type,
-                    book.pageCount?.let { "${it}p" },
-                    "ID:${book.sourceGalleryId}"
-                ).joinToString(" · ")
-            } else {
-                "未匹配 · zip / cbz"
+            val info = remember(
+                book.sourceGalleryId,
+                book.language,
+                book.type,
+                book.pageCount
+            ) {
+                if (book.sourceGalleryId != null) {
+                    listOfNotNull(
+                        book.language,
+                        book.type,
+                        book.pageCount?.let { "${it}p" },
+                        "ID:${book.sourceGalleryId}"
+                    ).joinToString(" · ")
+                } else {
+                    "未匹配 · zip / cbz"
+                }
             }
 
             Text(
@@ -1424,10 +1452,11 @@ private fun CompactBottomBar(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .height(48.dp)
     ) {
         Row(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             CompactBottomBarItem(
@@ -2039,23 +2068,35 @@ private fun MatchTaskItem(
             )
         },
         supportingContent = {
-            val line1 = listOfNotNull(
-                "状态：${matchTaskStatusLabel(task.status)}",
-                task.localPageCount?.let { "本地 ${it}p" },
-                "候选 ${task.candidateCount}"
-            ).joinToString(" · ")
+            val line1 = remember(
+                task.status,
+                task.localPageCount,
+                task.candidateCount
+            ) {
+                listOfNotNull(
+                    "状态：${matchTaskStatusLabel(task.status)}",
+                    task.localPageCount?.let { "本地 ${it}p" },
+                    "候选 ${task.candidateCount}"
+                ).joinToString(" · ")
+            }
 
-            val line2 = when {
-                task.matchedGalleryId != null -> {
-                    "已匹配 ID：${task.matchedGalleryId}"
-                }
+            val line2 = remember(
+                task.matchedGalleryId,
+                task.errorMessage,
+                task.query
+            ) {
+                when {
+                    task.matchedGalleryId != null -> {
+                        "已匹配 ID：${task.matchedGalleryId}"
+                    }
 
-                task.errorMessage != null -> {
-                    task.errorMessage
-                }
+                    task.errorMessage != null -> {
+                        task.errorMessage
+                    }
 
-                else -> {
-                    "搜索词：${task.query}"
+                    else -> {
+                        "搜索词：${task.query}"
+                    }
                 }
             }
 
@@ -2204,8 +2245,10 @@ private fun BookShelfContent(
     listState: LazyListState,
     gridState: LazyGridState,
     showRematchButtonInLibrary: Boolean,
+    showGridCoverPlayButton: Boolean,
     highlightedBookUri: String?,
     onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
     if (books.isEmpty()) {
@@ -2232,7 +2275,9 @@ private fun BookShelfContent(
                 gridState = gridState,
                 gridColumns = gridColumns,
                 highlightedBookUri = highlightedBookUri,
-                onOpenBook = onOpenBook
+                showGridCoverPlayButton = showGridCoverPlayButton,
+                onOpenBook = onOpenBook,
+                onReadBook = onReadBook
             )
         }
     }
@@ -2244,7 +2289,9 @@ private fun BookGrid(
     gridState: LazyGridState,
     gridColumns: Int,
     highlightedBookUri: String?,
-    onOpenBook: (BookItem) -> Unit
+    showGridCoverPlayButton: Boolean,
+    onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit
 ) {
     LazyVerticalGrid(
         state = gridState,
@@ -2266,8 +2313,12 @@ private fun BookGrid(
             GridBookCoverItem(
                 book = book,
                 highlighted = highlightedBookUri == book.uriString,
+                showPlayButton = showGridCoverPlayButton,
                 onClick = {
                     onOpenBook(book)
+                },
+                onPlayClick = {
+                    onReadBook(book)
                 }
             )
         }
@@ -2278,7 +2329,9 @@ private fun BookGrid(
 private fun GridBookCoverItem(
     book: BookItem,
     highlighted: Boolean,
-    onClick: () -> Unit
+    showPlayButton: Boolean,
+    onClick: () -> Unit,
+    onPlayClick: () -> Unit
 ) {
     val overlayColor = animatedHighlightOverlayColor(highlighted)
 
@@ -2312,6 +2365,31 @@ private fun GridBookCoverItem(
                 .matchParentSize()
                 .background(overlayColor)
         )
+
+        if (showPlayButton) {
+            Surface(
+                onClick = onPlayClick,
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f),
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                tonalElevation = 3.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+                    .size(36.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "直接阅读",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
     }
 }
 

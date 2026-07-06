@@ -5,7 +5,6 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.ice.hitomimanager.data.local.dao.BookDao
-import com.ice.hitomimanager.data.local.dao.LibrarySourceDao
 import com.ice.hitomimanager.data.local.dao.MatchTaskDao
 import com.ice.hitomimanager.data.local.dao.TagDao
 import com.ice.hitomimanager.data.local.entity.LibraryFolderEntity
@@ -28,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LibrarySourceEntity::class,
         LibraryFolderEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -36,7 +35,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
     abstract fun tagDao(): TagDao
     abstract fun matchTaskDao(): MatchTaskDao
-    abstract fun librarySourceDao(): LibrarySourceDao
 
     companion object {
         @Volatile
@@ -71,6 +69,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_match_task_libraryRootUriString ON match_task(libraryRootUriString)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_match_task_libraryRootUriString_status_updatedAt ON match_task(libraryRootUriString, status, updatedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_book_tag_tagKey_bookUriString ON book_tag(tagKey, bookUriString)")
+            }
+        }
+
         fun get(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -78,7 +84,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hitomi_manager.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also {
                         INSTANCE = it

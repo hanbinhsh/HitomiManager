@@ -3,6 +3,7 @@ package com.ice.hitomimanager.ui.screen
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,10 +15,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -32,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -89,7 +93,31 @@ fun ReaderScreen(
     var readerMode by rememberSaveable {
         mutableStateOf(ReaderMode.Page)
     }
+    var landscapeLocked by rememberSaveable {
+        mutableStateOf(false)
+    }
     val readerScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val activity = remember(context) {
+        context.findActivity()
+    }
+
+    DisposableEffect(activity) {
+        val previousOrientation = activity?.requestedOrientation
+            ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+        onDispose {
+            activity?.requestedOrientation = previousOrientation
+        }
+    }
+
+    LaunchedEffect(landscapeLocked, activity) {
+        activity?.requestedOrientation = if (landscapeLocked) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     ReaderSystemBars(
         visible = controlsVisible || readerMode == ReaderMode.Grid
@@ -174,7 +202,7 @@ fun ReaderScreen(
             imagePageCount > 0 -> {
                 HorizontalPager(
                     state = pagerState,
-                    beyondViewportPageCount = 2,
+                    beyondViewportPageCount = 1,
                     modifier = Modifier.fillMaxSize()
                 ) { pagerPage ->
                     if (pagerPage == 0) {
@@ -248,7 +276,11 @@ fun ReaderScreen(
         ) {
             ReaderBottomBar(
                 pageIndex = currentImagePage,
-                pageCount = imagePageCount
+                pageCount = imagePageCount,
+                landscapeLocked = landscapeLocked,
+                onToggleLandscape = {
+                    landscapeLocked = !landscapeLocked
+                }
             )
         }
     }
@@ -286,6 +318,7 @@ private fun ReaderTopBar(
             .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.72f))
             .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
         IconButton(
@@ -460,20 +493,41 @@ private fun ReaderGridPageItem(
 @Composable
 private fun ReaderBottomBar(
     pageIndex: Int,
-    pageCount: Int
+    pageCount: Int,
+    landscapeLocked: Boolean,
+    onToggleLandscape: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.72f))
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = "${pageIndex + 1} / $pageCount",
             color = Color.White
         )
+
+        IconButton(
+            onClick = onToggleLandscape,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ScreenRotation,
+                contentDescription = if (landscapeLocked) {
+                    "恢复方向"
+                } else {
+                    "横屏观看"
+                },
+                tint = if (landscapeLocked) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    Color.White
+                }
+            )
+        }
     }
 }
 

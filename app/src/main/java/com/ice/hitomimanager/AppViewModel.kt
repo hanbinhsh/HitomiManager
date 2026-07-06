@@ -25,6 +25,7 @@ import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.repository.HitomiMetadataRepository
 import com.ice.hitomimanager.data.local.entity.TagEntity
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
@@ -122,6 +123,8 @@ data class SettingsUiState(
     val settingsTab: SettingsTab = SettingsTab.General,
 
     val showRematchButtonInLibrary: Boolean = true,
+    val openBookDirectlyInReader: Boolean = false,
+    val showGridCoverPlayButton: Boolean = false,
     val libraryLayoutMode: LibraryLayoutMode = LibraryLayoutMode.List,
     val libraryGridColumns: Int = 3,
     val filteredMatchLanguagesText: String = "",
@@ -239,6 +242,8 @@ class AppViewModel(
             autoMatchSamePageFirst = prefs.getBoolean(KEY_AUTO_MATCH_SAME_PAGE_FIRST, true),
             autoOpenNextReviewTask = prefs.getBoolean(KEY_AUTO_OPEN_NEXT_REVIEW_TASK, true),
             showRematchButtonInLibrary = prefs.getBoolean(KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY, true),
+            openBookDirectlyInReader = prefs.getBoolean(KEY_OPEN_BOOK_DIRECTLY_IN_READER, false),
+            showGridCoverPlayButton = prefs.getBoolean(KEY_SHOW_GRID_COVER_PLAY_BUTTON, false),
             filteredMatchLanguagesText = prefs.getString(KEY_FILTERED_MATCH_LANGUAGES, null).orEmpty(),
             filteredMatchLanguages = parseFilteredMatchLanguages(
                 prefs.getString(KEY_FILTERED_MATCH_LANGUAGES, null).orEmpty()
@@ -287,7 +292,12 @@ class AppViewModel(
     init {
         recoverInterruptedMatchTasks()
         viewModelScope.launch {
-            libraryRepository.ensureLegacyLocalSource(prefs.getString(KEY_FOLDER_URI, null))
+            runCatching {
+                libraryRepository.ensureLegacyLocalSource(prefs.getString(KEY_FOLDER_URI, null))
+            }.onFailure { error ->
+                reportStartupDataError(error)
+                return@launch
+            }
             observeSources()
         }
     }
@@ -303,38 +313,69 @@ class AppViewModel(
     private fun observeSources() {
         sourceObserveJob?.cancel()
         sourceObserveJob = viewModelScope.launch {
-            libraryRepository.observeSources().collectLatest { sources ->
-                val scopes = buildSourceScopes(sources)
-                val currentKey = _libraryState.value.selectedSourceScopeKey
-                val fixedKey = when {
-                    scopes.any { it.key == currentKey } -> currentKey
-                    scopes.isNotEmpty() -> scopes.first().key
-                    else -> ALL_SOURCES_KEY
+            try {
+                libraryRepository.observeSources().collectLatest { sources ->
+                    val scopes = buildSourceScopes(sources)
+                    val currentKey = _libraryState.value.selectedSourceScopeKey
+                    val fixedKey = when {
+                        scopes.any { it.key == currentKey } -> currentKey
+                        scopes.isNotEmpty() -> scopes.first().key
+                        else -> ALL_SOURCES_KEY
+                    }
+                    val selected = scopes.firstOrNull { it.key == fixedKey }
+                    val concreteSourceId = selected?.sourceIds?.singleOrNull()
+                    _libraryState.update {
+                        it.copy(
+                            librarySources = sources,
+                            sourceScopes = scopes,
+                            selectedSourceScopeKey = fixedKey,
+                            folderUriString = selected?.sourceIds?.singleOrNull() ?: selected?.key,
+                            currentDirectorySourceId = concreteSourceId,
+                            currentDirectoryPath = selected?.folderPath.orEmpty()
+                        )
+                    }
+                    _settingsState.update {
+                        it.copy(
+                            librarySources = sources,
+                            folderUriString = sources.firstOrNull()?.rootUriString
+                        )
+                    }
+                    refreshLibraryBooks()
+                    observeTagItems()
+                    observeMatchTasks()
+                    observeMatchTaskFilterCounts()
+                    observeDirectory()
                 }
-                val selected = scopes.firstOrNull { it.key == fixedKey }
-                val concreteSourceId = selected?.sourceIds?.singleOrNull()
-                _libraryState.update {
-                    it.copy(
-                        librarySources = sources,
-                        sourceScopes = scopes,
-                        selectedSourceScopeKey = fixedKey,
-                        folderUriString = selected?.sourceIds?.singleOrNull() ?: selected?.key,
-                        currentDirectorySourceId = concreteSourceId,
-                        currentDirectoryPath = selected?.folderPath.orEmpty()
-                    )
-                }
-                _settingsState.update {
-                    it.copy(
-                        librarySources = sources,
-                        folderUriString = sources.firstOrNull()?.rootUriString
-                    )
-                }
-                refreshLibraryBooks()
-                observeTagItems()
-                observeMatchTasks()
-                observeMatchTaskFilterCounts()
-                observeDirectory()
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                reportStartupDataError(error)
             }
+        }
+    }
+
+    private fun reportStartupDataError(error: Throwable) {
+        val message = error.message.orEmpty()
+        val readable = when {
+            message.contains("migration", ignoreCase = true) ||
+                message.contains("Room cannot verify", ignoreCase = true) -> {
+                "数据库版本不匹配，当前安装包无法打开已有数据库。请确认已安装最新构建；原始错误：$message"
+            }
+
+            message.isNotBlank() -> "数据库打开失败：$message"
+
+            else -> "数据库打开失败：${error::class.java.simpleName}"
+        }
+
+        _libraryState.update {
+            it.copy(
+                isScanning = false,
+                error = readable
+            )
+        }
+        _settingsState.update {
+            it.copy(
+                librarySources = emptyList()
+            )
         }
     }
 
@@ -1018,14 +1059,32 @@ class AppViewModel(
             localPageCount = localPageCount
         )
 
-        var task = libraryRepository.getMatchTask(taskId) ?: return
+        val created = libraryRepository.getMatchTask(taskId) ?: return
 
-        task = task.copy(
+        val running = created.copy(
             status = MatchTaskStatus.Running,
             updatedAt = System.currentTimeMillis()
         )
-        libraryRepository.updateMatchTask(task)
+        libraryRepository.updateMatchTask(running)
 
+        executeMatchTaskSearch(
+            task = running,
+            query = query,
+            localPageCount = localPageCount,
+            defaultSearchFailMessage = "搜索失败"
+        )
+    }
+
+    /**
+     * 批量匹配与重试任务共用的核心流程：基于已置为 Running 的任务，
+     * 执行搜索 → 过滤候选 → 自动匹配判定 → 落库更新任务状态。
+     */
+    private suspend fun executeMatchTaskSearch(
+        task: MatchTaskEntity,
+        query: String,
+        localPageCount: Int?,
+        defaultSearchFailMessage: String
+    ) {
         if (localPageCount == null || localPageCount <= 0) {
             libraryRepository.updateMatchTask(
                 task.copy(
@@ -1046,7 +1105,7 @@ class AppViewModel(
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.Failed,
-                    errorMessage = compactDiagnostic(e.message ?: "搜索失败"),
+                    errorMessage = compactDiagnostic(e.message ?: defaultSearchFailMessage),
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -1060,6 +1119,12 @@ class AppViewModel(
         )
 
         if (rawCandidates.isEmpty()) {
+            libraryRepository.replaceCandidatesForTask(
+                taskId = task.id,
+                candidates = emptyList(),
+                selectedGalleryId = null
+            )
+
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.Failed,
@@ -1073,7 +1138,7 @@ class AppViewModel(
 
         if (candidates.isEmpty()) {
             libraryRepository.replaceCandidatesForTask(
-                taskId = taskId,
+                taskId = task.id,
                 candidates = emptyList(),
                 selectedGalleryId = null
             )
@@ -1098,7 +1163,7 @@ class AppViewModel(
         )
 
         libraryRepository.replaceCandidatesForTask(
-            taskId = taskId,
+            taskId = task.id,
             candidates = candidates,
             selectedGalleryId = autoSelected?.id
         )
@@ -1106,7 +1171,7 @@ class AppViewModel(
         if (autoSelected != null) {
             val saved = runCatching {
                 libraryRepository.bindHitomiMeta(
-                    uriString = book.uriString,
+                    uriString = task.bookUriString,
                     meta = autoSelected
                 )
             }.isSuccess
@@ -1135,6 +1200,7 @@ class AppViewModel(
             libraryRepository.updateMatchTask(
                 task.copy(
                     status = MatchTaskStatus.NeedReview,
+                    matchedGalleryId = null,
                     candidateCount = candidates.size,
                     errorMessage = null,
                     updatedAt = System.currentTimeMillis()
@@ -1352,8 +1418,9 @@ class AppViewModel(
     }
 
     private fun preloadAround(index: Int) {
-        for (i in (index - 2)..(index + 2)) {
-            ensurePageLoaded(i)
+        val offsets = listOf(0, 1, 2, 3, 4, -1, -2)
+        offsets.forEach { offset ->
+            ensurePageLoaded(index + offset)
         }
     }
 
@@ -2258,130 +2325,12 @@ class AppViewModel(
 
         libraryRepository.updateMatchTask(runningTask)
 
-        val localPageCount = runningTask.localPageCount
-
-        if (localPageCount == null || localPageCount <= 0) {
-            libraryRepository.updateMatchTask(
-                runningTask.copy(
-                    status = MatchTaskStatus.Skipped,
-                    errorMessage = "无法读取本地页数",
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-            return
-        }
-
-        val searchResult = runCatching {
-            hitomiRepository.searchTitle(
-                title = query,
-                timeoutMillis = matchSearchTimeoutMillis()
-            )
-        }.getOrElse { e ->
-            libraryRepository.updateMatchTask(
-                runningTask.copy(
-                    status = MatchTaskStatus.Failed,
-                    errorMessage = compactDiagnostic(e.message ?: "重新搜索失败"),
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-            return
-        }
-
-        val rawCandidates = searchResult.books
-        val candidates = prepareHitomiCandidates(
-            candidates = rawCandidates,
-            localPageCount = localPageCount
+        executeMatchTaskSearch(
+            task = runningTask,
+            query = query,
+            localPageCount = runningTask.localPageCount,
+            defaultSearchFailMessage = "重新搜索失败"
         )
-
-        if (rawCandidates.isEmpty()) {
-            libraryRepository.replaceCandidatesForTask(
-                taskId = runningTask.id,
-                candidates = emptyList(),
-                selectedGalleryId = null
-            )
-
-            libraryRepository.updateMatchTask(
-                runningTask.copy(
-                    status = MatchTaskStatus.Failed,
-                    candidateCount = 0,
-                    errorMessage = compactSearchFailure(searchResult),
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-            return
-        }
-
-        if (candidates.isEmpty()) {
-            libraryRepository.replaceCandidatesForTask(
-                taskId = runningTask.id,
-                candidates = emptyList(),
-                selectedGalleryId = null
-            )
-
-            libraryRepository.updateMatchTask(
-                runningTask.copy(
-                    status = MatchTaskStatus.Failed,
-                    candidateCount = 0,
-                    errorMessage = compactDiagnostic(
-                        "候选均被语言过滤；${searchResult.diagnosticSummary}"
-                    ),
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-            return
-        }
-
-        val autoSelected = chooseAutoMatchCandidate(
-            candidates = candidates,
-            localPageCount = localPageCount,
-            query = query
-        )
-
-        libraryRepository.replaceCandidatesForTask(
-            taskId = runningTask.id,
-            candidates = candidates,
-            selectedGalleryId = autoSelected?.id
-        )
-
-        if (autoSelected != null) {
-            val saved = runCatching {
-                libraryRepository.bindHitomiMeta(
-                    uriString = runningTask.bookUriString,
-                    meta = autoSelected
-                )
-            }.isSuccess
-
-            if (saved) {
-                libraryRepository.updateMatchTask(
-                    runningTask.copy(
-                        status = MatchTaskStatus.AutoMatched,
-                        matchedGalleryId = autoSelected.id,
-                        candidateCount = candidates.size,
-                        errorMessage = null,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-            } else {
-                libraryRepository.updateMatchTask(
-                    runningTask.copy(
-                        status = MatchTaskStatus.Failed,
-                        candidateCount = candidates.size,
-                        errorMessage = "保存匹配结果失败",
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-            }
-        } else {
-            libraryRepository.updateMatchTask(
-                runningTask.copy(
-                    status = MatchTaskStatus.NeedReview,
-                    matchedGalleryId = null,
-                    candidateCount = candidates.size,
-                    errorMessage = null,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-        }
     }
 
     fun matchById() {
@@ -2908,6 +2857,26 @@ class AppViewModel(
         }
     }
 
+    fun setOpenBookDirectlyInReader(enabled: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_OPEN_BOOK_DIRECTLY_IN_READER, enabled)
+            .apply()
+
+        _settingsState.update {
+            it.copy(openBookDirectlyInReader = enabled)
+        }
+    }
+
+    fun setShowGridCoverPlayButton(show: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_SHOW_GRID_COVER_PLAY_BUTTON, show)
+            .apply()
+
+        _settingsState.update {
+            it.copy(showGridCoverPlayButton = show)
+        }
+    }
+
     fun setLibraryLayoutMode(mode: LibraryLayoutMode) {
         prefs.edit()
             .putString(KEY_LIBRARY_LAYOUT_MODE, mode.name)
@@ -2954,6 +2923,8 @@ class AppViewModel(
         private const val KEY_AUTO_MATCH_EXACT_TITLE = "auto_match_exact_title"
         private const val KEY_AUTO_MATCH_UNIQUE_SAME_PAGE = "auto_match_unique_same_page"
         private const val KEY_SHOW_REMATCH_BUTTON_IN_LIBRARY = "show_rematch_button_in_library"
+        private const val KEY_OPEN_BOOK_DIRECTLY_IN_READER = "open_book_directly_in_reader"
+        private const val KEY_SHOW_GRID_COVER_PLAY_BUTTON = "show_grid_cover_play_button"
         private const val KEY_LIBRARY_LAYOUT_MODE = "library_layout_mode"
         private const val KEY_LIBRARY_GRID_COLUMNS = "library_grid_columns"
         private const val KEY_BOOK_SORT_MODE = "book_sort_mode"

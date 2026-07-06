@@ -8,7 +8,9 @@ import androidx.room.Index
     primaryKeys = ["bookUriString", "tagKey"],
     indices = [
         Index(value = ["bookUriString"]),
-        Index(value = ["tagKey"])
+        Index(value = ["tagKey"]),
+        // 覆盖 observeBooksByAllTags* 的 JOIN + GROUP BY ... HAVING COUNT(DISTINCT tagKey)
+        Index(value = ["tagKey", "bookUriString"])
     ]
 )
 data class BookTagEntity(

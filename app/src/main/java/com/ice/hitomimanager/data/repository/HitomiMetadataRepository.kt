@@ -8,6 +8,11 @@ import com.ice.hitomimanager.data.remote.HitomiMetaProvider
 import com.ice.hitomimanager.data.remote.HitomiSearchWebView
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 
 class HitomiMetadataRepository(
@@ -34,22 +39,26 @@ class HitomiMetadataRepository(
         val searchFailureReason = searchJson.optString("failureReason")
             .ifBlank { null }
 
-        val metas = mutableListOf<HitomiBookMeta>()
-        val failedIds = mutableListOf<String>()
-
-        for (candidate in searchCandidates) {
-            val meta = withTimeoutOrNull(META_FETCH_TIMEOUT_MILLIS) {
-                runCatching {
-                    metaProvider.fetchMeta(candidate.id)
-                }.getOrNull()
-            }
-
-            if (meta != null) {
-                metas += meta
-            } else {
-                failedIds += candidate.id
-            }
+        // 并行抓取候选元数据（有界并发，避免对 hitomi 过量请求/被限流）。
+        // 结果最终按 scoreTitle 重新排序，故并行不影响顺序。
+        val semaphore = Semaphore(META_FETCH_CONCURRENCY)
+        val fetched = coroutineScope {
+            searchCandidates.map { candidate ->
+                async {
+                    val meta = semaphore.withPermit {
+                        withTimeoutOrNull(META_FETCH_TIMEOUT_MILLIS) {
+                            runCatching {
+                                metaProvider.fetchMeta(candidate.id)
+                            }.getOrNull()
+                        }
+                    }
+                    candidate.id to meta
+                }
+            }.awaitAll()
         }
+
+        val metas = fetched.mapNotNull { it.second }
+        val failedIds = fetched.filter { it.second == null }.map { it.first }
 
         val sorted = metas
             .sortedByDescending { meta ->
@@ -152,10 +161,10 @@ class HitomiMetadataRepository(
     private fun normalize(s: String): String {
         return s
             .lowercase()
-            .replace(Regex("\\.(zip|cbz|rar|cbr|7z)$"), "")
+            .replace(EXTENSION_REGEX, "")
             .replace("_", " ")
             .replace("-", " ")
-            .replace(Regex("\\s+"), " ")
+            .replace(WHITESPACE_REGEX, " ")
             .trim()
     }
 
@@ -181,5 +190,9 @@ class HitomiMetadataRepository(
 
     private companion object {
         private const val META_FETCH_TIMEOUT_MILLIS = 30_000L
+        private const val META_FETCH_CONCURRENCY = 5
+
+        private val EXTENSION_REGEX = Regex("\\.(zip|cbz|rar|cbr|7z)$")
+        private val WHITESPACE_REGEX = Regex("\\s+")
     }
 }
