@@ -317,6 +317,9 @@ class LibraryRepository(
         withContext(Dispatchers.IO) {
             val databaseFile = context.getDatabasePath("hitomi_manager.db")
             val tempFile = File(databaseFile.parentFile, "hitomi_manager_import_tmp.db")
+            val backupFile = File(databaseFile.parentFile, "hitomi_manager_import_backup.db")
+
+            tempFile.delete()
 
             context.contentResolver.openInputStream(uri)?.use { input ->
                 tempFile.outputStream().use { output ->
@@ -326,27 +329,37 @@ class LibraryRepository(
 
             validateDatabaseFile(tempFile)
 
+            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use {
+                while (it.moveToNext()) Unit
+            }
+
             AppDatabase.closeInstance()
 
             try {
                 databaseFile.parentFile?.mkdirs()
+                backupFile.delete()
                 if (databaseFile.exists()) {
+                    databaseFile.copyTo(backupFile, overwrite = true)
+                }
+                deleteDatabaseSidecarFiles(databaseFile)
+                tempFile.copyTo(databaseFile, overwrite = true)
+                deleteDatabaseSidecarFiles(databaseFile)
+                reconnectDatabase()
+                db.openHelper.writableDatabase
+                backupFile.delete()
+            } catch (e: Exception) {
+                AppDatabase.closeInstance()
+                deleteDatabaseSidecarFiles(databaseFile)
+                if (backupFile.exists()) {
+                    backupFile.copyTo(databaseFile, overwrite = true)
+                    backupFile.delete()
+                } else {
                     databaseFile.delete()
                 }
-                deleteDatabaseSidecarFiles(databaseFile)
-
-                tempFile.inputStream().use { input ->
-                    databaseFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-
-                tempFile.delete()
-                deleteDatabaseSidecarFiles(databaseFile)
-                reconnectDatabase()
-            } catch (e: Exception) {
                 reconnectDatabase()
                 throw e
+            } finally {
+                tempFile.delete()
             }
         }
     }
@@ -367,6 +380,12 @@ class LibraryRepository(
                 require(cursor.moveToFirst() && cursor.getString(0).equals("ok", ignoreCase = true)) {
                     "导入文件不是有效的 SQLite 数据库"
                 }
+            }
+            database.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'book' LIMIT 1",
+                emptyArray()
+            ).use { cursor ->
+                require(cursor.moveToFirst()) { "所选文件不是 HitomiManager 数据库" }
             }
         }
     }
@@ -697,6 +716,7 @@ class LibraryRepository(
             treeUri = Uri.parse(rootUriString),
             onProgress = onProgress
         )
+        val scannedUris = scannedLibrary.books.mapTo(hashSetOf()) { it.uriString }
         val now = System.currentTimeMillis()
 
         // 分块批量事务：每块共用一个事务，显著减少逐本提交开销
@@ -725,12 +745,12 @@ class LibraryRepository(
                     return@forEach
                 }
 
-                val movedOld = bookDao.findReusableMovedBook(
-                    sourceId = source.id,
+                val movedOld = bookDao.findReusableMovedBooks(
                     displayName = scanned.displayName,
                     fileSize = scanned.fileSize,
                     uriString = scanned.uriString
-                )
+                ).filterNot { it.uriString in scannedUris }
+                    .singleOrNull()
 
                 if (movedOld != null) {
                     bookDao.migrateBookUri(

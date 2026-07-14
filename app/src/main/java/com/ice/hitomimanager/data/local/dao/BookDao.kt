@@ -502,8 +502,7 @@ interface BookDao {
         """
     SELECT *
     FROM book
-    WHERE sourceId = :sourceId
-      AND displayName = :displayName
+    WHERE displayName = :displayName
       AND fileSize = :fileSize
       AND uriString != :uriString
     ORDER BY 
@@ -512,15 +511,13 @@ interface BookDao {
         ELSE 0 
       END,
       updatedAt DESC
-    LIMIT 1
     """
     )
-    suspend fun findReusableMovedBook(
-        sourceId: String,
+    suspend fun findReusableMovedBooks(
         displayName: String,
         fileSize: Long,
         uriString: String
-    ): BookEntity?
+    ): List<BookEntity>
 
     @Query(
         """

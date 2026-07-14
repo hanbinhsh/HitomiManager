@@ -2452,7 +2452,7 @@ class AppViewModel(
                         matchTaskFilterCounts = emptyMap(),
                         selectedTagKeys = emptySet(),
                         searchQuery = "",
-                        error = "数据库已导入"
+                        error = "数据库已导入；重新扫描后会按文件名和大小恢复绑定"
                     )
                 }
 

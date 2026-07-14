@@ -11,7 +11,8 @@ import androidx.room.PrimaryKey
         Index(value = ["sourceGalleryId"]),
         Index(value = ["matchStatus"]),
         Index(value = ["sourceId"]),
-        Index(value = ["sourceId", "parentPath"])
+        Index(value = ["sourceId", "parentPath"]),
+        Index(value = ["displayName", "fileSize"])
     ]
 )
 data class BookEntity(
