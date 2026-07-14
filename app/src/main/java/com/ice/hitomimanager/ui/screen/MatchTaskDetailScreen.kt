@@ -189,7 +189,6 @@ fun MatchTaskDetailScreen(
         }
     }
 }
-
 @Composable
 private fun TaskHeaderCard(
     task: MatchTaskEntity,
@@ -387,18 +386,4 @@ private fun CandidateCard(
             }
         }
     )
-}
-
-private fun matchTaskStatusLabel(
-    status: String
-): String {
-    return when (status) {
-        MatchTaskStatus.Pending -> "等待中"
-        MatchTaskStatus.Running -> "匹配中"
-        MatchTaskStatus.AutoMatched -> "成功"
-        MatchTaskStatus.NeedReview -> "需复核"
-        MatchTaskStatus.Failed -> "失败"
-        MatchTaskStatus.Skipped -> "跳过"
-        else -> status
-    }
 }

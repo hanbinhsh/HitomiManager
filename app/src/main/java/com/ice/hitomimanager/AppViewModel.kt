@@ -6,12 +6,15 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.paging.PagingData
+import androidx.paging.cachedIn
 import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import com.ice.hitomimanager.data.model.BookItem
 import com.ice.hitomimanager.data.model.BookSortMode
 import com.ice.hitomimanager.data.model.PageInfo
 import com.ice.hitomimanager.domain.reader.ComicArchiveReader
+import com.ice.hitomimanager.domain.scanner.LibraryScanCoordinator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +24,8 @@ import java.io.File
 import com.ice.hitomimanager.data.repository.LibraryRepository
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.repository.HitomiMetadataRepository
 import com.ice.hitomimanager.data.local.entity.TagEntity
@@ -43,136 +48,16 @@ import com.ice.hitomimanager.data.model.LibrarySource
 import com.ice.hitomimanager.data.model.LibrarySourceScope
 import com.ice.hitomimanager.data.model.TagFilterTab
 import java.util.Locale
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 private const val ALL_SOURCES_KEY = "all"
 private const val LOCAL_SOURCES_KEY = "local"
-
-data class LibraryUiState(
-    val folderUriString: String? = null,
-    val librarySources: List<LibrarySource> = emptyList(),
-    val sourceScopes: List<LibrarySourceScope> = emptyList(),
-    val selectedSourceScopeKey: String = ALL_SOURCES_KEY,
-    val currentDirectorySourceId: String? = null,
-    val currentDirectoryPath: String = "",
-    val directoryFolders: List<LibraryFolderNode> = emptyList(),
-    val directoryBooks: List<BookItem> = emptyList(),
-    val directoryContentVersion: Long = 0L,
-    val directoryScrollToken: Long = 0L,
-    val books: List<BookItem> = emptyList(),
-    val bookSortMode: BookSortMode = BookSortMode.NameAsc,
-
-    val homeTab: HomeTab = HomeTab.Library,
-    val homeTabReselectTick: Long = 0L,
-
-    val selectedTagKeys: Set<String> = emptySet(),
-    val tagItems: List<TagCountItem> = emptyList(),
-    val tagSortMode: TagSortMode = TagSortMode.CountDesc,
-
-    val searchQuery: String = "",
-
-    val taskFilter: MatchTaskFilter = MatchTaskFilter.All,
-    val matchTasks: List<MatchTaskEntity> = emptyList(),
-    val unqueuedUnmatchedBooks: List<BookItem> = emptyList(),
-    val matchTaskFilterCounts: Map<MatchTaskFilter, Int> = emptyMap(),
-
-    val isBatchMatching: Boolean = false,
-
-    val isScanning: Boolean = false,
-    val error: String? = null,
-    val tagFilterTab: TagFilterTab = TagFilterTab.Tag,
-
-    val scanDone: Int = 0,
-    val scanTotal: Int = 0,
-    val scanCurrentName: String? = null,
-)
-
-data class MatchTaskDetailUiState(
-    val task: MatchTaskEntity? = null,
-    val candidates: List<MatchCandidateEntity> = emptyList(),
-    val isBinding: Boolean = false,
-    val isRefreshing: Boolean = false,
-    val error: String? = null
-)
-
-data class SettingsUiState(
-    val folderUriString: String? = null,
-    val librarySources: List<LibrarySource> = emptyList(),
-    val showTagNamespacePrefix: Boolean = true,
-
-    // 性别标签区分：开启时 male/female 标签分开计数并显示 ♂/♀；
-    // 关闭时同名标签合并计数、不区分性别
-    val distinguishGenderTags: Boolean = true,
-
-    val removeUnderscoreInMatchTitle: Boolean = true,
-    val removeTrailingNumberSuffixInMatchTitle: Boolean = true,
-
-    // 新增：名称完全相同，默认开启
-    val autoMatchExactTitle: Boolean = true,
-
-    // 原有：搜索结果仅一个，默认关闭
-    val autoMatchSingleResult: Boolean = false,
-
-    // 新增：唯一页数相同，默认开启
-    val autoMatchUniqueSamePage: Boolean = true,
-
-    // 原有：页数相同的第一个，默认开启
-    val autoMatchSamePageFirst: Boolean = true,
-
-    val autoOpenNextReviewTask: Boolean = true,
-
-    val settingsTab: SettingsTab = SettingsTab.General,
-
-    val showRematchButtonInLibrary: Boolean = true,
-    val openBookDirectlyInReader: Boolean = false,
-    val showGridCoverPlayButton: Boolean = false,
-    val libraryLayoutMode: LibraryLayoutMode = LibraryLayoutMode.List,
-    val libraryGridColumns: Int = 3,
-    val filteredMatchLanguagesText: String = "",
-    val filteredMatchLanguages: Set<String> = emptySet(),
-    val matchSearchTimeoutSecondsText: String = "30",
-    val matchSearchTimeoutSeconds: Int = 30,
-    val batchMatchThreadsText: String = "1",
-    val batchMatchThreads: Int = 1,
-)
-
-data class ReaderUiState(
-    val book: BookItem? = null,
-    val pages: List<String> = emptyList(),
-    val pageIndex: Int = 0,
-    val pageFiles: Map<Int, File> = emptyMap(),
-    val pageInfos: Map<Int, PageInfo> = emptyMap(),
-    val loadingPageIndices: Set<Int> = emptySet(),
-    val isOpening: Boolean = false,
-    val error: String? = null
-)
-
-data class BookDetailUiState(
-    val book: BookItem? = null,
-    val tags: List<TagEntity> = emptyList()
-)
-
-data class MatchUiState(
-    val book: BookItem? = null,
-    val sourceTaskId: Long? = null,
-    val query: String = "",
-    val localPageCount: Int? = null,
-    val candidates: List<HitomiBookMeta> = emptyList(),
-    val isSearching: Boolean = false,
-    val error: String? = null,
-    val searchDiagnosticSummary: String? = null,
-    val searchDiagnosticRaw: String? = null,
-    val showSearchDiagnosticRaw: Boolean = false
-)
-
-data class HitomiWebViewUiState(
-    val title: String = "搜索结果",
-    val url: String = ""
-)
 
 class AppViewModel(
     application: Application
 ) : AndroidViewModel(application) {
     private val app = application
+    private val scanCoordinator = LibraryScanCoordinator(viewModelScope)
 
     private val hitomiRepository = HitomiMetadataRepository(app)
 
@@ -218,6 +103,25 @@ class AppViewModel(
         )
     )
     val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
+
+    private var databaseGeneration = 0L
+    private val bookPagingQuery = MutableStateFlow(
+        BookPagingQuery(sortMode = readBookSortMode())
+    )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val libraryBooks = bookPagingQuery.flatMapLatest { query ->
+        if (!query.enabled) {
+            flowOf(PagingData.empty())
+        } else {
+            libraryRepository.pagedBooksForSourceIds(
+                sourceIds = query.sourceIds,
+                tagKeys = query.tagKeys,
+                query = query.searchQuery,
+                sortMode = query.sortMode
+            )
+        }
+    }.cachedIn(viewModelScope)
 
     private val _readerState = MutableStateFlow(ReaderUiState())
     val readerState: StateFlow<ReaderUiState> = _readerState.asStateFlow()
@@ -546,48 +450,27 @@ class AppViewModel(
 
         val state = _libraryState.value
         val sourceIds = currentSourceIds()
-
-        if (state.librarySources.isEmpty()) {
-            _libraryState.update {
-                it.copy(books = emptyList())
-            }
+        val enabled = state.librarySources.isNotEmpty()
+        bookPagingQuery.value = BookPagingQuery(
+            enabled = enabled,
+            sourceIds = sourceIds,
+            tagKeys = state.selectedTagKeys,
+            searchQuery = state.searchQuery.trim(),
+            sortMode = state.bookSortMode,
+            databaseGeneration = databaseGeneration
+        )
+        if (!enabled) {
+            _libraryState.update { it.copy(books = emptyList(), bookCount = 0) }
             return
         }
 
-        val searchQuery = state.searchQuery.trim()
-        val selectedTagKeys = state.selectedTagKeys.toList()
-
         libraryObserveJob = viewModelScope.launch {
-            val flow = when {
-                searchQuery.isNotBlank() -> {
-                    libraryRepository.observeBooksBySearchForSourceIds(
-                        sourceIds = sourceIds,
-                        query = searchQuery
-                    )
-                }
-
-                selectedTagKeys.isNotEmpty() -> {
-                    libraryRepository.observeBooksByAllTagsForSourceIds(
-                        sourceIds = sourceIds,
-                        tagKeys = selectedTagKeys
-                    )
-                }
-
-                else -> {
-                    libraryRepository.observeBooksForSourceIds(sourceIds)
-                }
-            }
-
-            flow.collectLatest { books ->
-                _libraryState.update { state ->
-                    state.copy(
-                        books = sortBooks(
-                            books = books,
-                            mode = state.bookSortMode
-                        )
-                    )
-                }
-                repairMissingCovers(books)
+            libraryRepository.observeBookCountByFiltersForSourceIds(
+                sourceIds = sourceIds,
+                tagKeys = state.selectedTagKeys,
+                query = state.searchQuery
+            ).collectLatest { count ->
+                _libraryState.update { it.copy(bookCount = count) }
             }
         }
     }
@@ -664,12 +547,13 @@ class AppViewModel(
         _libraryState.update { state ->
             state.copy(
                 bookSortMode = mode,
-                books = sortBooks(
-                    books = state.books,
+                directoryBooks = sortBooks(
+                    books = state.directoryBooks,
                     mode = mode
                 )
             )
         }
+        refreshLibraryBooks()
     }
 
     private fun repairMissingCovers(
@@ -698,6 +582,10 @@ class AppViewModel(
             }
     }
 
+    fun ensureBookCover(book: BookItem) {
+        repairMissingCovers(listOf(book))
+    }
+
     fun setHomeTab(tab: HomeTab) {
         _libraryState.update { state ->
             if (state.homeTab == tab) {
@@ -706,16 +594,6 @@ class AppViewModel(
                 state.copy(homeTab = tab)
             }
         }
-    }
-
-    private fun currentLibraryRoot(): String? {
-        val state = _libraryState.value
-        val selectedScope = state.sourceScopes.firstOrNull {
-            it.key == state.selectedSourceScopeKey
-        }
-        return selectedScope?.sourceIds?.singleOrNull()
-            ?: state.librarySources.firstOrNull()?.id
-            ?: state.folderUriString
     }
 
     fun selectSourceScope(key: String) {
@@ -791,8 +669,11 @@ class AppViewModel(
         if (concreteSourceId == null) {
             val sourceIds = currentSourceIds()
             directoryFolderObserveJob = viewModelScope.launch {
-                libraryRepository.observeFoldersForSourceIds(sourceIds)
-                    .collectLatest { folders ->
+                combine(
+                    libraryRepository.observeFoldersForSourceIds(sourceIds),
+                    libraryRepository.observeRootBooksForSourceIds(sourceIds)
+                ) { folders, books -> folders to books }
+                    .collectLatest { (folders, books) ->
                         val roots = folders.filter { it.parentPath.isNullOrBlank() }
                         val requestScroll = shouldScrollDirectoryToTop
                         if (requestScroll) {
@@ -801,7 +682,7 @@ class AppViewModel(
                         _libraryState.update {
                             it.copy(
                                 directoryFolders = roots,
-                                directoryBooks = emptyList(),
+                                directoryBooks = sortBooks(books, it.bookSortMode),
                                 directoryContentVersion = it.directoryContentVersion + 1L,
                                 directoryScrollToken = if (requestScroll) {
                                     it.directoryScrollToken + 1L
@@ -812,6 +693,7 @@ class AppViewModel(
                                 currentDirectoryPath = ""
                             )
                         }
+                        repairMissingCovers(books)
                     }
             }
             return
@@ -1620,7 +1502,7 @@ class AppViewModel(
                 libraryRepository.getNextNeedReviewTask(
                     currentTaskId = task.id,
                     currentUpdatedAt = task.updatedAt,
-                    libraryRootUriString = task.libraryRootUriString
+                    sourceIds = currentSourceIds()
                 )
             } else {
                 null
@@ -1901,10 +1783,10 @@ class AppViewModel(
         }
     }
 
-    fun deleteSource(sourceId: String) {
+    fun removeSourceConfiguration(sourceId: String) {
         viewModelScope.launch {
             runCatching {
-                libraryRepository.deleteSource(sourceId)
+                libraryRepository.removeSourceConfiguration(sourceId)
                 if (_libraryState.value.currentDirectorySourceId == sourceId) {
                     _libraryState.update {
                         it.copy(
@@ -1921,13 +1803,16 @@ class AppViewModel(
         }
     }
 
-    fun cleanupMissingFromConfiguredSources() {
+    fun cleanupOrphanedRecords() {
         viewModelScope.launch {
             runCatching {
-                libraryRepository.cleanupMissingFromConfiguredSources(currentSourceIds())
-            }.onSuccess { count ->
+                libraryRepository.cleanupOrphanedRecords(currentSourceIds())
+            }.onSuccess { result ->
                 _libraryState.update {
-                    it.copy(error = "已清理 $count 条数据库记录")
+                    it.copy(
+                        error = "已清理 ${result.mediaRecordsDeleted} 条媒体记录、" +
+                            "${result.folderRecordsDeleted} 条目录缓存"
+                    )
                 }
                 refreshLibraryBooks()
                 observeTagItems()
@@ -2162,10 +2047,15 @@ class AppViewModel(
         }
     }
 
-    fun bindMatch(meta: HitomiBookMeta) {
+    fun bindMatch(
+        meta: HitomiBookMeta,
+        onSuccess: () -> Unit = {}
+    ) {
         val state = _matchState.value
         val book = state.book ?: return
+        if (state.isBinding) return
 
+        _matchState.update { it.copy(isBinding = true, error = null) }
         viewModelScope.launch {
             try {
                 libraryRepository.bindHitomiMeta(
@@ -2181,11 +2071,15 @@ class AppViewModel(
                 )
 
                 _matchState.update {
-                    it.copy(error = null)
+                    it.copy(isBinding = false, error = null)
                 }
+                onSuccess()
             } catch (e: Exception) {
                 _matchState.update {
-                    it.copy(error = e.message ?: "保存失败")
+                    it.copy(
+                        isBinding = false,
+                        error = e.message ?: "保存失败"
+                    )
                 }
             }
         }
@@ -2420,51 +2314,74 @@ class AppViewModel(
     }
 
     fun importDatabase(uri: Uri) {
+        if (_libraryState.value.isScanning || _libraryState.value.isBatchMatching) {
+            _libraryState.update {
+                it.copy(error = "请等待扫描或批量匹配结束后再导入数据库")
+            }
+            return
+        }
         viewModelScope.launch {
+            stopDatabaseObservers()
             try {
-                libraryObserveJob?.cancel()
-                sourceObserveJob?.cancel()
-                directoryFolderObserveJob?.cancel()
-                directoryBookObserveJob?.cancel()
-                tagObserveJob?.cancel()
-                taskObserveJob?.cancel()
-                taskCountObserveJob?.cancel()
-                matchTaskDetailJob?.cancel()
-                matchTaskCandidateJob?.cancel()
-
-                libraryRepository.importDatabaseFrom(uri)
-
-                _bookDetailState.value = BookDetailUiState()
-                _matchTaskDetailState.value = MatchTaskDetailUiState()
-                _matchState.value = MatchUiState()
-                _readerState.value = ReaderUiState()
-
+                val result = libraryRepository.importDatabaseFrom(uri)
                 _libraryState.update {
-                    it.copy(
-                        books = emptyList(),
-                        librarySources = emptyList(),
-                        sourceScopes = emptyList(),
-                        directoryFolders = emptyList(),
-                        directoryBooks = emptyList(),
-                        tagItems = emptyList(),
-                        matchTasks = emptyList(),
-                        unqueuedUnmatchedBooks = emptyList(),
-                        matchTaskFilterCounts = emptyMap(),
-                        selectedTagKeys = emptySet(),
-                        searchQuery = "",
-                        error = "数据库已导入；重新扫描后会按文件名和大小恢复绑定"
+                    it.copy(error =
+                        "数据库已导入（版本 ${result.databaseVersion}，" +
+                            "${result.importedBytes} 字节）；重新扫描后会按文件名和大小恢复绑定"
                     )
                 }
-
-                observeSources()
             } catch (e: Exception) {
                 _libraryState.update {
                     it.copy(error = e.message ?: "导入数据库失败")
                 }
-
-                observeSources()
+            } finally {
+                reloadAfterDatabaseSwap()
             }
         }
+    }
+
+    private fun stopDatabaseObservers() {
+        scanCoordinator.cancel()
+        libraryObserveJob?.cancel()
+        sourceObserveJob?.cancel()
+        directoryFolderObserveJob?.cancel()
+        directoryBookObserveJob?.cancel()
+        tagObserveJob?.cancel()
+        taskObserveJob?.cancel()
+        taskCountObserveJob?.cancel()
+        matchTaskDetailJob?.cancel()
+        matchTaskCandidateJob?.cancel()
+    }
+
+    fun reloadAfterDatabaseSwap() {
+        stopDatabaseObservers()
+        databaseGeneration += 1L
+        bookPagingQuery.value = BookPagingQuery(
+            sortMode = _libraryState.value.bookSortMode,
+            databaseGeneration = databaseGeneration
+        )
+        _bookDetailState.value = BookDetailUiState()
+        _matchTaskDetailState.value = MatchTaskDetailUiState()
+        _matchState.value = MatchUiState()
+        _readerState.value = ReaderUiState()
+        _libraryState.update {
+            it.copy(
+                books = emptyList(),
+                bookCount = 0,
+                librarySources = emptyList(),
+                sourceScopes = emptyList(),
+                directoryFolders = emptyList(),
+                directoryBooks = emptyList(),
+                tagItems = emptyList(),
+                matchTasks = emptyList(),
+                unqueuedUnmatchedBooks = emptyList(),
+                matchTaskFilterCounts = emptyMap(),
+                selectedTagKeys = emptySet(),
+                searchQuery = ""
+            )
+        }
+        recoverInterruptedMatchTasks()
+        observeSources()
     }
 
     private fun cleanFileName(
@@ -2520,31 +2437,30 @@ class AppViewModel(
     }
 
     private fun scanSources(sourceIds: List<String>) {
-        viewModelScope.launch {
-            val targetSourceIds = if (sourceIds.isEmpty()) {
-                _libraryState.value.librarySources.map { it.id }
-            } else {
-                sourceIds
-            }
+        val targetSourceIds = if (sourceIds.isEmpty()) {
+            _libraryState.value.librarySources.map { it.id }
+        } else {
+            sourceIds
+        }
 
-            if (targetSourceIds.isEmpty()) {
+        if (targetSourceIds.isEmpty()) {
+            _libraryState.update { it.copy(error = "请先添加书库目录") }
+            return
+        }
+
+        scanCoordinator.launch(
+            onStarted = {
                 _libraryState.update {
-                    it.copy(error = "请先添加书库目录")
+                    it.copy(
+                        isScanning = true,
+                        scanDone = 0,
+                        scanTotal = 0,
+                        scanCurrentName = null,
+                        error = null
+                    )
                 }
-                return@launch
-            }
-
-            _libraryState.update {
-                it.copy(
-                    isScanning = true,
-                    scanDone = 0,
-                    scanTotal = 0,
-                    scanCurrentName = null,
-                    error = null
-                )
-            }
-
-            try {
+            },
+            scan = {
                 for (sourceId in targetSourceIds) {
                     libraryRepository.scanSource(
                         sourceId = sourceId,
@@ -2559,7 +2475,8 @@ class AppViewModel(
                         }
                     )
                 }
-
+            },
+            onCompleted = {
                 _libraryState.update {
                     it.copy(
                         isScanning = false,
@@ -2572,18 +2489,19 @@ class AppViewModel(
                 observeMatchTasks()
                 observeMatchTaskFilterCounts()
                 observeDirectory()
-            } catch (e: Exception) {
+            },
+            onFailed = { error ->
                 _libraryState.update {
                     it.copy(
                         isScanning = false,
                         scanDone = 0,
                         scanTotal = 0,
                         scanCurrentName = null,
-                        error = e.message ?: "扫描失败"
+                        error = error.message ?: "扫描失败"
                     )
                 }
             }
-        }
+        )
     }
 
     fun openReaderFromMatchTask(
@@ -2909,6 +2827,15 @@ class AppViewModel(
             it.copy(libraryGridColumns = fixed)
         }
     }
+
+    private data class BookPagingQuery(
+        val enabled: Boolean = false,
+        val sourceIds: List<String> = emptyList(),
+        val tagKeys: Set<String> = emptySet(),
+        val searchQuery: String = "",
+        val sortMode: BookSortMode = BookSortMode.NameAsc,
+        val databaseGeneration: Long = 0L
+    )
 
     companion object {
         private const val KEY_FOLDER_URI = "folder_uri"

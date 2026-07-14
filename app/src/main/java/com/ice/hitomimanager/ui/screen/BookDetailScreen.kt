@@ -474,22 +474,6 @@ private fun TagSection(
     }
 }
 
-private fun formatTagLabel(
-    tag: TagEntity,
-    showNamespace: Boolean,
-    distinguishGenderTags: Boolean
-): String {
-    val name = tag.translatedName ?: tag.name
-
-    return when {
-        // 命名空间前缀优先级最高，显示 [male]/[female] 等文字前缀
-        showNamespace -> "[${tag.namespace}] $name"
-        distinguishGenderTags && tag.namespace == "male" -> "♂ $name"
-        distinguishGenderTags && tag.namespace == "female" -> "♀ $name"
-        else -> name
-    }
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MetadataGroupSection(

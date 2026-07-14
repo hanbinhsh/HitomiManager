@@ -26,6 +26,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Assignment
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.FolderOpen
@@ -34,7 +37,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -73,7 +75,6 @@ import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagSortMode
 import java.io.File
 import com.ice.hitomimanager.data.model.MatchTaskFilter
-import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.runtime.mutableStateOf
@@ -95,12 +96,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.TagFilterTab
 import androidx.compose.material3.Tab
+import androidx.paging.LoadState
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.itemKey
 import kotlinx.coroutines.delay
 
 private data class DirectoryScrollPosition(
@@ -121,6 +124,7 @@ private const val HighlightFadeMillis = 450
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
+    books: LazyPagingItems<BookItem>,
     state: LibraryUiState,
     showTagNamespacePrefix: Boolean,
     distinguishGenderTags: Boolean = true,
@@ -156,6 +160,7 @@ fun LibraryScreen(
     highlightedBookUri: String?,
     onHighlightedBookConsumed: () -> Unit,
     onReadBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit,
 ) {
     val libraryListState = rememberLazyListState()
     val libraryGridState = rememberLazyGridState()
@@ -361,7 +366,7 @@ fun LibraryScreen(
                             }
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.Sort,
+                                imageVector = Icons.AutoMirrored.Filled.Sort,
                                 contentDescription = "排序"
                             )
                         }
@@ -399,7 +404,7 @@ fun LibraryScreen(
                             imageVector = when (libraryLayoutMode) {
                                 LibraryLayoutMode.List -> Icons.Filled.GridView
                                 LibraryLayoutMode.Grid -> Icons.Filled.FolderOpen
-                                LibraryLayoutMode.Directory -> Icons.Filled.ViewList
+                                LibraryLayoutMode.Directory -> Icons.AutoMirrored.Filled.ViewList
                             },
                             contentDescription = when (libraryLayoutMode) {
                                 LibraryLayoutMode.List -> "切换到网格布局"
@@ -454,6 +459,7 @@ fun LibraryScreen(
                         .fillMaxSize()
                         .padding(paddingValues),
                     state = state,
+                    books = books,
                     showTagNamespacePrefix = showTagNamespacePrefix,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
                     showGridCoverPlayButton = showGridCoverPlayButton,
@@ -466,6 +472,7 @@ fun LibraryScreen(
                     onClearSearch = onClearSearch,
                     onOpenBook = ::openBookWithPositionMemory,
                     onReadBook = onReadBook,
+                    onBookVisible = onBookVisible,
                     onMatchBook = onMatchBook,
                     onOpenDirectory = ::openDirectoryWithPositionMemory,
                     onDirectoryUp = ::navigateDirectoryUpWithPositionRestore,
@@ -496,6 +503,7 @@ fun LibraryScreen(
                         .fillMaxSize()
                         .padding(paddingValues),
                     state = state,
+                    books = books,
                     showRematchButtonInLibrary = showRematchButtonInLibrary,
                     showGridCoverPlayButton = showGridCoverPlayButton,
                     libraryLayoutMode = libraryLayoutMode,
@@ -506,6 +514,7 @@ fun LibraryScreen(
                     onClearSearch = onClearSearch,
                     onOpenBook = ::openBookWithPositionMemory,
                     onReadBook = onReadBook,
+                    onBookVisible = onBookVisible,
                     onMatchBook = onMatchBook,
                     highlightedBookUri = highlightedBookUri
                 )
@@ -617,6 +626,7 @@ private fun ResultCountText(
 private fun LibraryContent(
     modifier: Modifier,
     state: LibraryUiState,
+    books: LazyPagingItems<BookItem>,
     showTagNamespacePrefix: Boolean,
     showRematchButtonInLibrary: Boolean,
     showGridCoverPlayButton: Boolean,
@@ -629,6 +639,7 @@ private fun LibraryContent(
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
     onReadBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit,
     onOpenDirectory: (LibraryFolderNode) -> Unit,
     onDirectoryUp: () -> Unit,
@@ -669,7 +680,7 @@ private fun LibraryContent(
         }
 
         ResultCountText(
-            text = "共 ${state.books.size} 本"
+            text = "共 ${state.bookCount} 本"
         )
 
         if (libraryLayoutMode == LibraryLayoutMode.Directory) {
@@ -684,13 +695,9 @@ private fun LibraryContent(
                 onOpenBook = onOpenBook,
                 onMatchBook = onMatchBook
             )
-        } else if (!state.isScanning && state.books.isEmpty()) {
-            EmptyHint(
-                text = "没有符合条件的作品。"
-            )
         } else {
-            BookShelfContent(
-                books = state.books,
+            PagedBookShelfContent(
+                pagingBooks = books,
                 layoutMode = libraryLayoutMode,
                 gridColumns = libraryGridColumns,
                 listState = listState,
@@ -700,6 +707,7 @@ private fun LibraryContent(
                 highlightedBookUri = highlightedBookUri,
                 onOpenBook = onOpenBook,
                 onReadBook = onReadBook,
+                onBookVisible = onBookVisible,
                 onMatchBook = onMatchBook
             )
         }
@@ -718,17 +726,7 @@ private fun DirectoryContent(
     onOpenBook: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit
 ) {
-    val books = remember(
-        state.currentDirectorySourceId,
-        state.books,
-        state.directoryBooks
-    ) {
-        if (state.currentDirectorySourceId == null) {
-            state.books.filter { it.parentPath.isNullOrBlank() }
-        } else {
-            state.directoryBooks
-        }
-    }
+    val books = state.directoryBooks
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -899,6 +897,7 @@ private fun canNavigateDirectoryUp(state: LibraryUiState): Boolean {
 private fun SearchContent(
     modifier: Modifier,
     state: LibraryUiState,
+    books: LazyPagingItems<BookItem>,
     showRematchButtonInLibrary: Boolean,
     showGridCoverPlayButton: Boolean,
     listState: LazyListState,
@@ -907,6 +906,7 @@ private fun SearchContent(
     onClearSearch: () -> Unit,
     onOpenBook: (BookItem) -> Unit,
     onReadBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit,
     onMatchBook: (BookItem) -> Unit,
     libraryLayoutMode: LibraryLayoutMode,
     libraryGridColumns: Int,
@@ -940,11 +940,11 @@ private fun SearchContent(
         }
 
         ResultCountText(
-            text = "共 ${state.books.size} 本"
+            text = "共 ${state.bookCount} 本"
         )
 
-        BookShelfContent(
-            books = state.books,
+        PagedBookShelfContent(
+            pagingBooks = books,
             layoutMode = libraryLayoutMode,
             gridColumns = libraryGridColumns,
             listState = listState,
@@ -954,6 +954,7 @@ private fun SearchContent(
             highlightedBookUri = highlightedBookUri,
             onOpenBook = onOpenBook,
             onReadBook = onReadBook,
+            onBookVisible = onBookVisible,
             onMatchBook = onMatchBook
         )
     }
@@ -1032,7 +1033,7 @@ private fun TagFilterContent(
     Column(
         modifier = modifier
     ) {
-        TabRow(
+        PrimaryTabRow(
             selectedTabIndex = state.tagFilterTab.ordinal
         ) {
             TagFilterTab.values().forEach { tab ->
@@ -1373,22 +1374,6 @@ private fun EmptyHint(
     }
 }
 
-private fun formatTagLabel(
-    tag: TagCountItem,
-    showNamespace: Boolean,
-    distinguishGenderTags: Boolean
-): String {
-    val name = tag.translatedName ?: tag.name
-
-    return when {
-        // 命名空间前缀优先级最高，显示 [male]/[female] 等文字前缀
-        showNamespace -> "[${tag.namespace}] $name"
-        distinguishGenderTags && tag.namespace == "male" -> "♂ $name"
-        distinguishGenderTags && tag.namespace == "female" -> "♀ $name"
-        else -> name
-    }
-}
-
 private fun namespaceTitle(namespace: String): String {
     return when (namespace) {
         "tag" -> "标签"
@@ -1511,7 +1496,7 @@ private fun CompactBottomBar(
                 selected = selectedTab == HomeTab.Tasks,
                 icon = {
                     Icon(
-                        imageVector = Icons.Filled.Assignment,
+                        imageVector = Icons.AutoMirrored.Filled.Assignment,
                         contentDescription = "任务",
                         modifier = Modifier.size(20.dp)
                     )
@@ -2180,20 +2165,6 @@ private fun matchTaskFilterLabel(
     }
 }
 
-private fun matchTaskStatusLabel(
-    status: String
-): String {
-    return when (status) {
-        MatchTaskStatus.Pending -> "等待中"
-        MatchTaskStatus.Running -> "匹配中"
-        MatchTaskStatus.AutoMatched -> "成功"
-        MatchTaskStatus.NeedReview -> "需复核"
-        MatchTaskStatus.Failed -> "失败"
-        MatchTaskStatus.Skipped -> "跳过"
-        else -> status
-    }
-}
-
 private fun bookSortModeLabel(
     mode: BookSortMode
 ): String {
@@ -2278,6 +2249,144 @@ private fun BookShelfContent(
                 showGridCoverPlayButton = showGridCoverPlayButton,
                 onOpenBook = onOpenBook,
                 onReadBook = onReadBook
+            )
+        }
+    }
+}
+
+@Composable
+private fun PagedBookShelfContent(
+    pagingBooks: LazyPagingItems<BookItem>,
+    layoutMode: LibraryLayoutMode,
+    gridColumns: Int,
+    listState: LazyListState,
+    gridState: LazyGridState,
+    showRematchButtonInLibrary: Boolean,
+    showGridCoverPlayButton: Boolean,
+    highlightedBookUri: String?,
+    onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit,
+    onMatchBook: (BookItem) -> Unit
+) {
+    when {
+        pagingBooks.loadState.refresh is LoadState.Loading && pagingBooks.itemCount == 0 -> {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        }
+
+        pagingBooks.loadState.refresh is LoadState.Error && pagingBooks.itemCount == 0 -> {
+            val error = (pagingBooks.loadState.refresh as LoadState.Error).error
+            EmptyHint(error.message ?: "加载书库失败。")
+        }
+
+        pagingBooks.itemCount == 0 -> {
+            EmptyHint("没有符合条件的作品。")
+        }
+
+        layoutMode == LibraryLayoutMode.Grid -> {
+            PagedBookGrid(
+                books = pagingBooks,
+                gridState = gridState,
+                gridColumns = gridColumns,
+                highlightedBookUri = highlightedBookUri,
+                showGridCoverPlayButton = showGridCoverPlayButton,
+                onOpenBook = onOpenBook,
+                onReadBook = onReadBook,
+                onBookVisible = onBookVisible
+            )
+        }
+
+        else -> {
+            PagedBookList(
+                books = pagingBooks,
+                listState = listState,
+                showRematchButtonInLibrary = showRematchButtonInLibrary,
+                highlightedBookUri = highlightedBookUri,
+                onOpenBook = onOpenBook,
+                onMatchBook = onMatchBook,
+                onBookVisible = onBookVisible
+            )
+        }
+    }
+}
+
+@Composable
+private fun PagedBookList(
+    books: LazyPagingItems<BookItem>,
+    listState: LazyListState,
+    showRematchButtonInLibrary: Boolean,
+    highlightedBookUri: String?,
+    onOpenBook: (BookItem) -> Unit,
+    onMatchBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        items(
+            count = books.itemCount,
+            key = books.itemKey { it.uriString }
+        ) { index ->
+            val book = books[index] ?: return@items
+            LaunchedEffect(book.uriString, book.coverFilePath) {
+                onBookVisible(book)
+            }
+            BookListItem(
+                book = book,
+                showRematchButtonInLibrary = showRematchButtonInLibrary,
+                highlighted = highlightedBookUri == book.uriString,
+                onClick = { onOpenBook(book) },
+                onMatchClick = { onMatchBook(book) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PagedBookGrid(
+    books: LazyPagingItems<BookItem>,
+    gridState: LazyGridState,
+    gridColumns: Int,
+    highlightedBookUri: String?,
+    showGridCoverPlayButton: Boolean,
+    onOpenBook: (BookItem) -> Unit,
+    onReadBook: (BookItem) -> Unit,
+    onBookVisible: (BookItem) -> Unit
+) {
+    LazyVerticalGrid(
+        state = gridState,
+        columns = GridCells.Fixed(gridColumns.coerceIn(2, 6)),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 8.dp,
+            top = 8.dp,
+            end = 8.dp,
+            bottom = 24.dp
+        ),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(
+            count = books.itemCount,
+            key = books.itemKey { it.uriString }
+        ) { index ->
+            val book = books[index] ?: return@items
+            LaunchedEffect(book.uriString, book.coverFilePath) {
+                onBookVisible(book)
+            }
+            GridBookCoverItem(
+                book = book,
+                highlighted = highlightedBookUri == book.uriString,
+                showPlayButton = showGridCoverPlayButton,
+                onClick = { onOpenBook(book) },
+                onPlayClick = { onReadBook(book) }
             )
         }
     }

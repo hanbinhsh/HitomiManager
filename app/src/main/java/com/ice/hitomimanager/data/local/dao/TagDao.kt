@@ -38,25 +38,6 @@ interface TagDao {
 
     @Query(
         """
-    SELECT 
-        tag.`key` AS tagKey,
-        tag.namespace AS namespace,
-        tag.name AS name,
-        tag.translatedName AS translatedName,
-        COUNT(book_tag.bookUriString) AS bookCount
-    FROM tag
-    INNER JOIN book_tag ON tag.`key` = book_tag.tagKey
-    INNER JOIN book ON book.uriString = book_tag.bookUriString
-    WHERE book.libraryRootUriString = :libraryRootUriString
-    GROUP BY tag.`key`, tag.namespace, tag.name, tag.translatedName
-    """
-    )
-    fun observeTagCounts(
-        libraryRootUriString: String
-    ): Flow<List<TagCountItem>>
-
-    @Query(
-        """
     SELECT
         tag.`key` AS tagKey,
         tag.namespace AS namespace,

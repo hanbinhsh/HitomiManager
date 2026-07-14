@@ -21,18 +21,6 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
-    ORDER BY updatedAt DESC, id DESC
-    """
-    )
-    fun observeTasks(
-        libraryRootUriString: String
-    ): Flow<List<MatchTaskEntity>>
-
-    @Query(
-        """
-    SELECT *
-    FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
     ORDER BY updatedAt DESC, id DESC
     """
@@ -40,20 +28,6 @@ interface MatchTaskDao {
     fun observeTasksForSourceIds(
         sourceIds: List<String>,
         sourceCount: Int
-    ): Flow<List<MatchTaskEntity>>
-
-    @Query(
-        """
-    SELECT *
-    FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
-      AND status IN (:statuses)
-    ORDER BY updatedAt DESC, id DESC
-    """
-    )
-    fun observeTasksByStatuses(
-        libraryRootUriString: String,
-        statuses: List<String>
     ): Flow<List<MatchTaskEntity>>
 
     @Query(
@@ -75,18 +49,6 @@ interface MatchTaskDao {
         """
     SELECT status, COUNT(*) AS count
     FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
-    GROUP BY status
-    """
-    )
-    fun observeStatusCounts(
-        libraryRootUriString: String
-    ): Flow<List<MatchTaskStatusCount>>
-
-    @Query(
-        """
-    SELECT status, COUNT(*) AS count
-    FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
     GROUP BY status
     """
@@ -95,18 +57,6 @@ interface MatchTaskDao {
         sourceIds: List<String>,
         sourceCount: Int
     ): Flow<List<MatchTaskStatusCount>>
-
-    @Query(
-        """
-    SELECT status, COUNT(*) AS count
-    FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
-    GROUP BY status
-    """
-    )
-    suspend fun getStatusCounts(
-        libraryRootUriString: String
-    ): List<MatchTaskStatusCount>
 
     @Query(
         """
@@ -170,20 +120,6 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
-      AND status IN (:statuses)
-    ORDER BY updatedAt DESC, id DESC
-    """
-    )
-    suspend fun getTasksByStatuses(
-        libraryRootUriString: String,
-        statuses: List<String>
-    ): List<MatchTaskEntity>
-
-    @Query(
-        """
-    SELECT *
-    FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
       AND status IN (:statuses)
     ORDER BY updatedAt DESC, id DESC
@@ -199,7 +135,7 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
       AND status = :status
       AND (
           updatedAt < :currentUpdatedAt
@@ -210,7 +146,8 @@ interface MatchTaskDao {
     """
     )
     suspend fun getNextTaskByStatusAfterCursor(
-        libraryRootUriString: String,
+        sourceIds: List<String>,
+        sourceCount: Int,
         status: String,
         currentTaskId: Long,
         currentUpdatedAt: Long
@@ -220,7 +157,7 @@ interface MatchTaskDao {
         """
     SELECT *
     FROM match_task
-    WHERE libraryRootUriString = :libraryRootUriString
+    WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
       AND status = :status
       AND id != :currentTaskId
     ORDER BY updatedAt DESC, id DESC
@@ -228,7 +165,8 @@ interface MatchTaskDao {
     """
     )
     suspend fun getFirstTaskByStatus(
-        libraryRootUriString: String,
+        sourceIds: List<String>,
+        sourceCount: Int,
         status: String,
         currentTaskId: Long
     ): MatchTaskEntity?

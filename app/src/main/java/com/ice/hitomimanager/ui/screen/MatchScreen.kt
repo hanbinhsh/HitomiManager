@@ -121,6 +121,17 @@ fun MatchScreen(
                 }
             }
 
+            if (state.isBinding) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator()
+                    Text("正在保存元数据...")
+                }
+            }
+
             if (state.error != null) {
                 Text(
                     text = state.error,
@@ -146,6 +157,7 @@ fun MatchScreen(
                     CandidateItem(
                         meta = meta,
                         localPageCount = state.localPageCount,
+                        enabled = !state.isSearching && !state.isBinding,
                         onBind = {
                             onBind(meta)
                         }
@@ -160,6 +172,7 @@ fun MatchScreen(
 private fun CandidateItem(
     meta: HitomiBookMeta,
     localPageCount: Int?,
+    enabled: Boolean,
     onBind: () -> Unit
 ) {
     val pageMatched = localPageCount != null &&
@@ -214,13 +227,14 @@ private fun CandidateItem(
         },
         trailingContent = {
             Button(
-                onClick = onBind
+                onClick = onBind,
+                enabled = enabled
             ) {
                 Text("绑定")
             }
         },
         modifier = Modifier
-            .clickable(onClick = onBind)
+            .clickable(enabled = enabled, onClick = onBind)
             .fillMaxWidth()
     )
 }
@@ -297,7 +311,7 @@ private fun MatchBookHeader(
                 ) {
                     FilledTonalIconButton(
                         onClick = onRead,
-                        enabled = !state.isSearching
+                        enabled = !state.isSearching && !state.isBinding
                     ) {
                         Icon(
                             imageVector = Icons.Filled.PlayArrow,
@@ -307,7 +321,7 @@ private fun MatchBookHeader(
 
                     FilledTonalIconButton(
                         onClick = onSearch,
-                        enabled = !state.isSearching
+                        enabled = !state.isSearching && !state.isBinding
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Search,
@@ -317,14 +331,14 @@ private fun MatchBookHeader(
 
                     OutlinedButton(
                         onClick = onIdMatch,
-                        enabled = !state.isSearching
+                        enabled = !state.isSearching && !state.isBinding
                     ) {
                         Text("ID 匹配")
                     }
 
                     OutlinedButton(
                         onClick = onOpenSearchWebView,
-                        enabled = !state.isSearching && state.query.isNotBlank()
+                        enabled = !state.isSearching && !state.isBinding && state.query.isNotBlank()
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Public,

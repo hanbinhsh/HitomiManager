@@ -9,7 +9,7 @@ import androidx.room.Index
     indices = [
         Index(value = ["bookUriString"]),
         Index(value = ["tagKey"]),
-        // 覆盖 observeBooksByAllTags* 的 JOIN + GROUP BY ... HAVING COUNT(DISTINCT tagKey)
+        // Supports the paging filter's JOIN/GROUP BY lookup by tag first.
         Index(value = ["tagKey", "bookUriString"])
     ]
 )

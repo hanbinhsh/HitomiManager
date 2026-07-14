@@ -23,7 +23,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -161,7 +161,7 @@ fun SettingsScreen(
                 Text("清理缺失记录？")
             },
             text = {
-                Text("只会删除数据库中当前配置目录最近成功扫描未见到的作品记录，以及对应标签、任务和候选；不会删除本地文件。")
+                Text("会删除当前来源范围最近成功扫描未见到的作品记录；在全部范围下，也会删除已解绑来源留下的缓存。不会删除本地文件。")
             },
             confirmButton = {
                 Button(
@@ -209,10 +209,10 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            TabRow(
+            PrimaryTabRow(
                 selectedTabIndex = state.settingsTab.ordinal
             ) {
-                SettingsTab.values().forEach { tab ->
+                SettingsTab.entries.forEach { tab ->
                     Tab(
                         selected = state.settingsTab == tab,
                         onClick = {
@@ -226,7 +226,7 @@ fun SettingsScreen(
             }
 
             when (state.settingsTab) {
-                SettingsTab.General -> {
+                SettingsTab.Directory -> {
                     GeneralSettingsContent(
                         state = state,
                         onPickFolder = {
@@ -234,7 +234,12 @@ fun SettingsScreen(
                         },
                         onRenameSource = onRenameSource,
                         onDeleteSource = onDeleteSource,
-                        onScanSource = onScanSource,
+                        onScanSource = onScanSource
+                    )
+                }
+
+                SettingsTab.Database -> {
+                    DatabaseSettingsContent(
                         onExportDatabaseClick = {
                             val timestamp = SimpleDateFormat(
                                 "yyyyMMdd_HHmmss",
@@ -302,11 +307,7 @@ private fun GeneralSettingsContent(
     onPickFolder: () -> Unit,
     onRenameSource: (String, String) -> Unit,
     onDeleteSource: (String) -> Unit,
-    onScanSource: (String) -> Unit,
-    onExportDatabaseClick: () -> Unit,
-    onImportDatabaseClick: () -> Unit,
-    onClearDatabaseClick: () -> Unit,
-    onCleanupMissingClick: () -> Unit
+    onScanSource: (String) -> Unit
 ) {
     var renamingSource by remember {
         mutableStateOf<LibrarySource?>(null)
@@ -407,11 +408,21 @@ private fun GeneralSettingsContent(
                 )
             }
         }
+    }
+}
 
-        HorizontalDivider(
-            modifier = Modifier.padding(vertical = 8.dp)
-        )
-
+@Composable
+private fun DatabaseSettingsContent(
+    onExportDatabaseClick: () -> Unit,
+    onImportDatabaseClick: () -> Unit,
+    onClearDatabaseClick: () -> Unit,
+    onCleanupMissingClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
         SectionTitle("数据库")
 
         ListItem(
@@ -461,8 +472,7 @@ private fun GeneralSettingsContent(
             },
             trailingContent = {
                 Button(
-                    onClick = onCleanupMissingClick,
-                    enabled = state.librarySources.isNotEmpty()
+                    onClick = onCleanupMissingClick
                 ) {
                     Text("清理")
                 }
@@ -950,8 +960,9 @@ private fun settingsTabLabel(
     tab: SettingsTab
 ): String {
     return when (tab) {
-        SettingsTab.General -> "常规"
+        SettingsTab.Directory -> "目录"
         SettingsTab.Display -> "显示"
         SettingsTab.Match -> "匹配"
+        SettingsTab.Database -> "数据库"
     }
 }

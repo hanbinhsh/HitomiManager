@@ -13,6 +13,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.paging.compose.collectAsLazyPagingItems
 import com.ice.hitomimanager.AppViewModel
 import com.ice.hitomimanager.data.model.HomeTab
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
@@ -41,6 +42,7 @@ fun AppRoot(
     val hitomiWebViewState by viewModel.hitomiWebViewState.collectAsStateWithLifecycle()
     val settingsState by viewModel.settingsState.collectAsStateWithLifecycle()
     val matchTaskDetailState by viewModel.matchTaskDetailState.collectAsStateWithLifecycle()
+    val libraryBooks = viewModel.libraryBooks.collectAsLazyPagingItems()
     var pendingDetailBookUri by remember {
         mutableStateOf<String?>(null)
     }
@@ -78,6 +80,7 @@ fun AppRoot(
     ) {
         composable(Routes.Library) {
             LibraryScreen(
+                books = libraryBooks,
                 distinguishGenderTags = settingsState.distinguishGenderTags,
                 state = libraryState,
                 showTagNamespacePrefix = settingsState.showTagNamespacePrefix,
@@ -137,6 +140,7 @@ fun AppRoot(
                     viewModel.openBook(book)
                     navController.navigate(Routes.Reader)
                 },
+                onBookVisible = viewModel::ensureBookCover,
                 onMatchBook = { book ->
                     viewModel.startMatch(book)
                     navController.navigate(Routes.Match)
@@ -229,8 +233,9 @@ fun AppRoot(
                     }
                 },
                 onBind = { meta ->
-                    viewModel.bindMatch(meta)
-                    navController.popBackStack()
+                    viewModel.bindMatch(meta) {
+                        navController.popBackStack()
+                    }
                 }
             )
         }
@@ -254,7 +259,7 @@ fun AppRoot(
                 onSettingsTabChange = viewModel::setSettingsTab,
                 onFolderPicked = viewModel::onFolderPicked,
                 onRenameSource = viewModel::renameSource,
-                onDeleteSource = viewModel::deleteSource,
+                onDeleteSource = viewModel::removeSourceConfiguration,
                 onScanSource = viewModel::scanSource,
                 onShowTagNamespacePrefixChange = viewModel::setShowTagNamespacePrefix,
                 onDistinguishGenderTagsChange = viewModel::setDistinguishGenderTags,
@@ -269,7 +274,7 @@ fun AppRoot(
                 onClearDatabase = viewModel::clearDatabase,
                 onExportDatabasePicked = viewModel::exportDatabase,
                 onImportDatabasePicked = viewModel::importDatabase,
-                onCleanupMissingRecords = viewModel::cleanupMissingFromConfiguredSources,
+                onCleanupMissingRecords = viewModel::cleanupOrphanedRecords,
                 onShowRematchButtonInLibraryChange = viewModel::setShowRematchButtonInLibrary,
                 onOpenBookDirectlyInReaderChange = viewModel::setOpenBookDirectlyInReader,
                 onShowGridCoverPlayButtonChange = viewModel::setShowGridCoverPlayButton,

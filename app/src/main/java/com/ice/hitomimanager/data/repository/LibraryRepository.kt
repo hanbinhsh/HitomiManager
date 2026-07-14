@@ -4,12 +4,19 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingData
+import androidx.paging.map
 import com.ice.hitomimanager.data.local.AppDatabase
 import com.ice.hitomimanager.data.local.entity.BookEntity
 import com.ice.hitomimanager.data.local.entity.BookTagEntity
 import com.ice.hitomimanager.data.local.entity.LibraryFolderEntity
 import com.ice.hitomimanager.data.local.entity.TagEntity
 import com.ice.hitomimanager.data.model.BookItem
+import com.ice.hitomimanager.data.model.BookSortMode
+import com.ice.hitomimanager.data.model.CleanupResult
+import com.ice.hitomimanager.data.model.DatabaseImportResult
 import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.model.LibraryFolderNode
 import com.ice.hitomimanager.data.model.LibrarySource
@@ -108,16 +115,47 @@ class LibraryRepository(
         return source
     }
 
-    suspend fun deleteSource(sourceId: String) {
-        db.withTransaction {
-            bookDao.deleteFoldersForSource(sourceId)
-            bookDao.deleteSource(sourceId)
-        }
+    suspend fun removeSourceConfiguration(sourceId: String) {
+        bookDao.deleteSource(sourceId)
     }
 
-    fun observeBooksForSourceIds(sourceIds: List<String>): Flow<List<BookItem>> {
-        return bookDao.observeBooksForSourceIds(sourceIds, sourceIds.size)
-            .map { list -> list.map { it.toBookItem() } }
+    fun pagedBooksForSourceIds(
+        sourceIds: List<String>,
+        tagKeys: Set<String>,
+        query: String,
+        sortMode: BookSortMode
+    ): Flow<PagingData<BookItem>> {
+        return Pager(
+            PagingConfig(pageSize = 60, enablePlaceholders = false)
+        ) {
+            bookDao.pagingBooksForSourceIds(
+                sourceIds = sourceIds,
+                sourceCount = sourceIds.size,
+                tagKeys = tagKeys.toList(),
+                tagCount = tagKeys.size,
+                query = query.trim(),
+                sortMode = sortMode.name
+            )
+        }.flow.map { pagingData -> pagingData.map { it.toBookItem() } }
+    }
+
+    fun observeBookCountByFiltersForSourceIds(
+        sourceIds: List<String>,
+        tagKeys: Set<String>,
+        query: String
+    ): Flow<Int> {
+        return bookDao.observeBookCountByFiltersForSourceIds(
+            sourceIds = sourceIds,
+            sourceCount = sourceIds.size,
+            tagKeys = tagKeys.toList(),
+            tagCount = tagKeys.size,
+            query = query.trim()
+        )
+    }
+
+    fun observeRootBooksForSourceIds(sourceIds: List<String>): Flow<List<BookItem>> {
+        return bookDao.observeRootBooksForSourceIds(sourceIds, sourceIds.size)
+            .map { entities -> entities.map { it.toBookItem() } }
     }
 
     fun observeChildFolders(sourceId: String, parentPath: String): Flow<List<LibraryFolderNode>> {
@@ -135,29 +173,6 @@ class LibraryRepository(
             .map { list -> list.map { it.toBookItem() } }
     }
 
-    fun observeBooks(
-        libraryRootUriString: String
-    ): Flow<List<BookItem>> {
-        return bookDao.observeBooks(libraryRootUriString)
-            .map { list ->
-                list.map { it.toBookItem() }
-            }
-    }
-
-    fun observeMatchTasksByStatuses(
-        libraryRootUriString: String,
-        statuses: List<String>
-    ): Flow<List<MatchTaskEntity>> {
-        return if (statuses.isEmpty()) {
-            matchTaskDao.observeTasks(libraryRootUriString)
-        } else {
-            matchTaskDao.observeTasksByStatuses(
-                libraryRootUriString = libraryRootUriString,
-                statuses = statuses
-            )
-        }
-    }
-
     fun observeMatchTasksByStatusesForSourceIds(
         sourceIds: List<String>,
         statuses: List<String>
@@ -173,17 +188,6 @@ class LibraryRepository(
         }
     }
 
-    fun observeMatchTaskFilterCounts(
-        libraryRootUriString: String
-    ): Flow<Map<MatchTaskFilter, Int>> {
-        return combine(
-            matchTaskDao.observeStatusCounts(libraryRootUriString),
-            bookDao.observeUnqueuedUnmatchedBookCount(libraryRootUriString)
-        ) { statusCounts, unqueuedCount ->
-            buildMatchTaskFilterCounts(statusCounts, unqueuedCount)
-        }
-    }
-
     fun observeMatchTaskFilterCountsForSourceIds(
         sourceIds: List<String>
     ): Flow<Map<MatchTaskFilter, Int>> {
@@ -193,15 +197,6 @@ class LibraryRepository(
         ) { statusCounts, unqueuedCount ->
             buildMatchTaskFilterCounts(statusCounts, unqueuedCount)
         }
-    }
-
-    suspend fun getMatchTaskFilterCounts(
-        libraryRootUriString: String
-    ): Map<MatchTaskFilter, Int> {
-        return buildMatchTaskFilterCounts(
-            statusCounts = matchTaskDao.getStatusCounts(libraryRootUriString),
-            unqueuedCount = bookDao.countUnqueuedUnmatchedBooks(libraryRootUriString)
-        )
     }
 
     suspend fun getMatchTaskFilterCountsForSourceIds(
@@ -232,13 +227,6 @@ class LibraryRepository(
             MatchTaskFilter.Skipped to (byStatus[MatchTaskStatus.Skipped] ?: 0),
             MatchTaskFilter.Unqueued to unqueuedCount
         )
-    }
-
-    suspend fun getUnmatchedBooks(
-        libraryRootUriString: String
-    ): List<BookItem> {
-        return bookDao.getUnmatchedBooks(libraryRootUriString)
-            .map { it.toBookItem() }
     }
 
     suspend fun getUnmatchedBooksForSourceIds(
@@ -313,7 +301,7 @@ class LibraryRepository(
         }
     }
 
-    suspend fun importDatabaseFrom(uri: Uri) {
+    suspend fun importDatabaseFrom(uri: Uri): DatabaseImportResult =
         withContext(Dispatchers.IO) {
             val databaseFile = context.getDatabasePath("hitomi_manager.db")
             val tempFile = File(databaseFile.parentFile, "hitomi_manager_import_tmp.db")
@@ -327,7 +315,8 @@ class LibraryRepository(
                 }
             } ?: error("无法打开导入文件")
 
-            validateDatabaseFile(tempFile)
+            val importedBytes = tempFile.length()
+            val databaseVersion = validateDatabaseFile(tempFile)
 
             db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use {
                 while (it.moveToNext()) Unit
@@ -347,6 +336,10 @@ class LibraryRepository(
                 reconnectDatabase()
                 db.openHelper.writableDatabase
                 backupFile.delete()
+                DatabaseImportResult(
+                    importedBytes = importedBytes,
+                    databaseVersion = databaseVersion
+                )
             } catch (e: Exception) {
                 AppDatabase.closeInstance()
                 deleteDatabaseSidecarFiles(databaseFile)
@@ -362,9 +355,8 @@ class LibraryRepository(
                 tempFile.delete()
             }
         }
-    }
 
-    private fun validateDatabaseFile(file: File) {
+    private fun validateDatabaseFile(file: File): Int {
         require(file.exists() && file.length() > 0L) {
             "导入文件为空"
         }
@@ -375,7 +367,7 @@ class LibraryRepository(
             SQLiteDatabase.OPEN_READONLY
         )
 
-        sqlite.use { database ->
+        return sqlite.use { database ->
             database.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
                 require(cursor.moveToFirst() && cursor.getString(0).equals("ok", ignoreCase = true)) {
                     "导入文件不是有效的 SQLite 数据库"
@@ -386,6 +378,10 @@ class LibraryRepository(
                 emptyArray()
             ).use { cursor ->
                 require(cursor.moveToFirst()) { "所选文件不是 HitomiManager 数据库" }
+            }
+            database.rawQuery("PRAGMA user_version", emptyArray()).use { cursor ->
+                require(cursor.moveToFirst()) { "无法读取数据库版本" }
+                cursor.getInt(0)
             }
         }
     }
@@ -472,22 +468,6 @@ class LibraryRepository(
         }
     }
 
-    fun observeTagCounts(
-        libraryRootUriString: String
-    ): Flow<List<TagCountItem>> {
-        return combine(
-            tagDao.observeTagCounts(libraryRootUriString),
-            bookDao.observeLanguageFacetCounts(libraryRootUriString),
-            bookDao.observeTypeFacetCounts(libraryRootUriString)
-        ) { tagCounts, languageCounts, typeCounts ->
-            val normalTags = tagCounts.filterNot {
-                it.namespace == "language" || it.namespace == "type"
-            }
-
-            normalTags + languageCounts + typeCounts
-        }
-    }
-
     fun observeTagCountsForSourceIds(
         sourceIds: List<String>,
         mergeGenderTags: Boolean = false
@@ -524,169 +504,6 @@ class LibraryRepository(
         }
     }
 
-    fun observeBooksByAllTags(
-        libraryRootUriString: String,
-        tagKeys: List<String>
-    ): Flow<List<BookItem>> {
-        if (tagKeys.isEmpty()) {
-            return observeBooks(libraryRootUriString)
-        }
-
-        val facetKeys = tagKeys.filter { isFacetTagKey(it) }
-        val normalTagKeys = tagKeys.filterNot { isFacetTagKey(it) }
-
-        val baseFlow = if (normalTagKeys.isEmpty()) {
-            observeBooks(libraryRootUriString)
-        } else {
-            bookDao.observeBooksByAllTags(
-                libraryRootUriString = libraryRootUriString,
-                tagKeys = normalTagKeys,
-                tagCount = normalTagKeys.size
-            ).map { list ->
-                list.map { it.toBookItem() }
-            }
-        }
-
-        return baseFlow.map { books ->
-            books.filter { book ->
-                facetKeys.all { key ->
-                    bookMatchesFacetKey(book, key)
-                }
-            }
-        }
-    }
-
-    fun observeBooksByAllTagsForSourceIds(
-        sourceIds: List<String>,
-        tagKeys: List<String>
-    ): Flow<List<BookItem>> {
-        if (tagKeys.isEmpty()) {
-            return observeBooksForSourceIds(sourceIds)
-        }
-
-        val genderKeys = tagKeys.filter { isGenderMergedKey(it) }
-        val facetKeys = tagKeys.filter { isFacetTagKey(it) }
-        val normalTagKeys = tagKeys.filterNot {
-            isFacetTagKey(it) || isGenderMergedKey(it)
-        }
-
-        val baseFlow = if (normalTagKeys.isEmpty()) {
-            observeBooksForSourceIds(sourceIds)
-        } else {
-            bookDao.observeBooksByAllTagsForSourceIds(
-                sourceIds = sourceIds,
-                sourceCount = sourceIds.size,
-                tagKeys = normalTagKeys,
-                tagCount = normalTagKeys.size
-            ).map { list ->
-                list.map { it.toBookItem() }
-            }
-        }
-
-        if (genderKeys.isEmpty()) {
-            return baseFlow.map { books ->
-                books.filter { book ->
-                    facetKeys.all { key ->
-                        bookMatchesFacetKey(book, key)
-                    }
-                }
-            }
-        }
-
-        // 合并性别筛选：每个合并键匹配 male/female 任一（组内 OR），多个键之间 AND
-        val genderMemberFlows = genderKeys.map { key ->
-            val name = key.removePrefix("gender:")
-            val members = listOf(
-                makeTagKey("male", name),
-                makeTagKey("female", name)
-            )
-            bookDao.observeBookUrisByAnyTagForSourceIds(
-                sourceIds = sourceIds,
-                sourceCount = sourceIds.size,
-                tagKeys = members
-            ).map { it.toSet() }
-        }
-
-        val genderSetsFlow = combine(genderMemberFlows) { it.toList() }
-
-        return combine(baseFlow, genderSetsFlow) { books, genderSets ->
-            books.filter { book ->
-                facetKeys.all { key -> bookMatchesFacetKey(book, key) } &&
-                        genderSets.all { uris -> book.uriString in uris }
-            }
-        }
-    }
-
-    private fun isFacetTagKey(key: String): Boolean {
-        return key.startsWith("language:") || key.startsWith("type:")
-    }
-
-    private fun isGenderMergedKey(key: String): Boolean {
-        return key.startsWith("gender:")
-    }
-
-    private fun bookMatchesFacetKey(
-        book: BookItem,
-        key: String
-    ): Boolean {
-        val normalizedKey = key.lowercase()
-
-        return when {
-            normalizedKey.startsWith("language:") -> {
-                makeTagKey(
-                    namespace = "language",
-                    name = book.language.orEmpty()
-                ) == normalizedKey
-            }
-
-            normalizedKey.startsWith("type:") -> {
-                makeTagKey(
-                    namespace = "type",
-                    name = book.type.orEmpty()
-                ) == normalizedKey
-            }
-
-            else -> true
-        }
-    }
-
-    fun observeBooksBySearch(
-        libraryRootUriString: String,
-        query: String
-    ): Flow<List<BookItem>> {
-        val cleaned = query.trim()
-
-        if (cleaned.isBlank()) {
-            return observeBooks(libraryRootUriString)
-        }
-
-        return bookDao.observeBooksBySearch(
-            libraryRootUriString = libraryRootUriString,
-            query = cleaned
-        ).map { list ->
-            list.map { it.toBookItem() }
-        }
-    }
-
-    fun observeBooksBySearchForSourceIds(
-        sourceIds: List<String>,
-        query: String
-    ): Flow<List<BookItem>> {
-        val cleaned = query.trim()
-
-        if (cleaned.isBlank()) {
-            return observeBooksForSourceIds(sourceIds)
-        }
-
-        return bookDao.observeBooksBySearchForSourceIds(
-            sourceIds = sourceIds,
-            sourceCount = sourceIds.size,
-            query = cleaned
-        ).map { list ->
-            list.map { it.toBookItem() }
-        }
-    }
-
     fun observeTagsForBook(uriString: String): Flow<List<TagEntity>> {
         return tagDao.observeTagsForBook(uriString)
     }
@@ -697,14 +514,6 @@ class LibraryRepository(
         return bookDao.findByUri(uriString)?.toBookItem()
     }
 
-    suspend fun scanAndSync(
-        treeUri: Uri,
-        onProgress: (ScanProgress) -> Unit = {}
-    ) {
-        val source = addOrUpdateLocalSource(treeUri)
-        scanSource(source.id, onProgress)
-    }
-
     suspend fun scanSource(
         sourceId: String,
         onProgress: (ScanProgress) -> Unit = {}
@@ -712,37 +521,119 @@ class LibraryRepository(
         val source = bookDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
         val scanStartedAt = System.currentTimeMillis()
         val rootUriString = source.rootUriString
-        val scannedLibrary = scanner.scan(
-            treeUri = Uri.parse(rootUriString),
-            onProgress = onProgress
-        )
-        val scannedUris = scannedLibrary.books.mapTo(hashSetOf()) { it.uriString }
         val now = System.currentTimeMillis()
+        val scannedUris = linkedSetOf<String>()
+        val pendingBooks = mutableListOf<com.ice.hitomimanager.domain.scanner.ScannedBook>()
+        var hadPersistenceFailure = false
 
-        // 分块批量事务：每块共用一个事务，显著减少逐本提交开销
-        scannedLibrary.books.chunked(SCAN_TX_CHUNK).forEach { chunk ->
-            db.withTransaction {
-                chunk.forEach { scanned ->
-                    val oldBySameUri = bookDao.findByUri(scanned.uriString)
+        suspend fun flushPendingBooks() {
+            if (pendingBooks.isEmpty()) return
+            val batch = pendingBooks.toList()
+            pendingBooks.clear()
+            try {
+                persistScannedBooks(
+                    source = source,
+                    rootUriString = rootUriString,
+                    books = batch,
+                    scannedUris = scannedUris,
+                    scanStartedAt = scanStartedAt,
+                    updatedAt = now
+                )
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                batch.forEach { book ->
+                    try {
+                        persistScannedBooks(
+                            source = source,
+                            rootUriString = rootUriString,
+                            books = listOf(book),
+                            scannedUris = scannedUris,
+                            scanStartedAt = scanStartedAt,
+                            updatedAt = now
+                        )
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (_: Throwable) {
+                        hadPersistenceFailure = true
+                    }
+                }
+            }
+        }
 
-                    if (oldBySameUri != null) {
-                    val coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath
+        val folders = scanner.scan(
+            treeUri = Uri.parse(rootUriString),
+            onProgress = onProgress,
+            onDiscovered = { discoveredUris ->
+                scannedUris.clear()
+                scannedUris.addAll(discoveredUris)
+            },
+            onBook = { scannedBook ->
+                pendingBooks += scannedBook
+                if (pendingBooks.size >= SCAN_TX_CHUNK) {
+                    flushPendingBooks()
+                }
+            }
+        )
+        flushPendingBooks()
 
-                    val entity = oldBySameUri.copy(
-                        libraryRootUriString = rootUriString,
-                        sourceId = source.id,
-                        relativePath = scanned.relativePath,
-                        parentPath = scanned.parentPath,
-                        displayName = scanned.displayName,
-                        fileSize = scanned.fileSize,
-                        lastModified = scanned.lastModified,
-                        coverFilePath = coverFilePath,
-                        lastSeenAt = scanStartedAt,
-                        updatedAt = now
+        db.withTransaction {
+            bookDao.deleteFoldersForSource(source.id)
+            val folderEntities = folders.map { folder ->
+                LibraryFolderEntity(
+                    sourceId = source.id,
+                    sourceName = source.name,
+                    path = folder.path,
+                    parentPath = folder.parentPath,
+                    name = folder.name,
+                    updatedAt = now
+                )
+            }
+            if (folderEntities.isNotEmpty()) {
+                bookDao.upsertFolders(folderEntities)
+            }
+            bookDao.upsertSource(
+                source.copy(
+                    updatedAt = now,
+                    lastCompletedScanAt = if (hadPersistenceFailure) {
+                        source.lastCompletedScanAt
+                    } else {
+                        scanStartedAt
+                    }
+                ).toEntity()
+            )
+        }
+
+        // 不要 deleteMissing。扫描默认只增量更新，缺失记录由用户主动清理。
+    }
+
+    private suspend fun persistScannedBooks(
+        source: LibrarySource,
+        rootUriString: String,
+        books: List<com.ice.hitomimanager.domain.scanner.ScannedBook>,
+        scannedUris: Set<String>,
+        scanStartedAt: Long,
+        updatedAt: Long
+    ) {
+        db.withTransaction {
+            books.forEach bookLoop@ { scanned ->
+                val oldBySameUri = bookDao.findByUri(scanned.uriString)
+                if (oldBySameUri != null) {
+                    bookDao.upsert(
+                        oldBySameUri.copy(
+                            libraryRootUriString = rootUriString,
+                            sourceId = source.id,
+                            relativePath = scanned.relativePath,
+                            parentPath = scanned.parentPath,
+                            displayName = scanned.displayName,
+                            fileSize = scanned.fileSize,
+                            lastModified = scanned.lastModified,
+                            coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath,
+                            lastSeenAt = scanStartedAt,
+                            updatedAt = updatedAt
+                        )
                     )
-
-                    bookDao.upsert(entity)
-                    return@forEach
+                    return@bookLoop
                 }
 
                 val movedOld = bookDao.findReusableMovedBooks(
@@ -753,6 +644,7 @@ class LibraryRepository(
                     .singleOrNull()
 
                 if (movedOld != null) {
+                    val coverFilePath = scanned.coverFilePath ?: movedOld.coverFilePath
                     bookDao.migrateBookUri(
                         oldUriString = movedOld.uriString,
                         newUriString = scanned.uriString,
@@ -763,85 +655,44 @@ class LibraryRepository(
                         displayName = scanned.displayName,
                         fileSize = scanned.fileSize,
                         lastModified = scanned.lastModified,
-                        coverFilePath = scanned.coverFilePath,
+                        coverFilePath = coverFilePath,
                         lastSeenAt = scanStartedAt,
-                        updatedAt = now
+                        updatedAt = updatedAt
                     )
-
-                    tagDao.migrateBookUri(
-                        oldUriString = movedOld.uriString,
-                        newUriString = scanned.uriString
-                    )
-
+                    tagDao.migrateBookUri(movedOld.uriString, scanned.uriString)
                     matchTaskDao.migrateBookUri(
                         oldUriString = movedOld.uriString,
                         newUriString = scanned.uriString,
                         libraryRootUriString = rootUriString,
                         displayName = scanned.displayName,
-                        coverFilePath = scanned.coverFilePath,
-                        updatedAt = now
+                        coverFilePath = coverFilePath,
+                        updatedAt = updatedAt
                     )
-
-                    return@forEach
+                    return@bookLoop
                 }
 
-                val newEntity = BookEntity(
-                    displayName = scanned.displayName,
-                    uriString = scanned.uriString,
-                    libraryRootUriString = rootUriString,
-                    sourceId = source.id,
-                    relativePath = scanned.relativePath,
-                    parentPath = scanned.parentPath,
-                    fileSize = scanned.fileSize,
-                    lastModified = scanned.lastModified,
-                    coverFilePath = scanned.coverFilePath,
-                    createdAt = now,
-                    updatedAt = now,
-                    lastSeenAt = scanStartedAt
-                )
-
-                    bookDao.upsert(newEntity)
-                }
-            }
-        }
-
-        db.withTransaction {
-            bookDao.deleteFoldersForSource(source.id)
-            val folders = scannedLibrary.folders.map { folder ->
-                LibraryFolderEntity(
-                    sourceId = source.id,
-                    sourceName = source.name,
-                    path = folder.path,
-                    parentPath = folder.parentPath,
-                    name = folder.name,
-                    updatedAt = now
+                bookDao.upsert(
+                    BookEntity(
+                        displayName = scanned.displayName,
+                        uriString = scanned.uriString,
+                        libraryRootUriString = rootUriString,
+                        sourceId = source.id,
+                        relativePath = scanned.relativePath,
+                        parentPath = scanned.parentPath,
+                        fileSize = scanned.fileSize,
+                        lastModified = scanned.lastModified,
+                        coverFilePath = scanned.coverFilePath,
+                        createdAt = updatedAt,
+                        updatedAt = updatedAt,
+                        lastSeenAt = scanStartedAt
+                    )
                 )
             }
-            if (folders.isNotEmpty()) {
-                bookDao.upsertFolders(folders)
-            }
-            bookDao.upsertSource(
-                source.copy(
-                    updatedAt = now,
-                    lastCompletedScanAt = scanStartedAt
-                ).toEntity()
-            )
         }
-
-        // 不要 deleteMissing。扫描默认只增量更新，缺失记录由用户主动清理。
     }
 
     fun observeMatchTask(taskId: Long): Flow<MatchTaskEntity?> {
         return matchTaskDao.observeTask(taskId)
-    }
-
-    fun observeUnqueuedUnmatchedBooks(
-        libraryRootUriString: String
-    ): Flow<List<BookItem>> {
-        return bookDao.observeUnqueuedUnmatchedBooks(libraryRootUriString)
-            .map { list ->
-                list.map { it.toBookItem() }
-            }
     }
 
     fun observeUnqueuedUnmatchedBooksForSourceIds(
@@ -865,16 +716,6 @@ class LibraryRepository(
         matchTaskDao.markSelectedCandidate(
             taskId = taskId,
             galleryId = galleryId
-        )
-    }
-
-    suspend fun getMatchTasksByStatuses(
-        libraryRootUriString: String,
-        statuses: List<String>
-    ): List<MatchTaskEntity> {
-        return matchTaskDao.getTasksByStatuses(
-            libraryRootUriString = libraryRootUriString,
-            statuses = statuses
         )
     }
 
@@ -950,17 +791,17 @@ class LibraryRepository(
     suspend fun getNextNeedReviewTask(
         currentTaskId: Long,
         currentUpdatedAt: Long,
-        libraryRootUriString: String?
+        sourceIds: List<String>
     ): MatchTaskEntity? {
-        if (libraryRootUriString == null) return null
-
         return matchTaskDao.getNextTaskByStatusAfterCursor(
-            libraryRootUriString = libraryRootUriString,
+            sourceIds = sourceIds,
+            sourceCount = sourceIds.size,
             status = MatchTaskStatus.NeedReview,
             currentTaskId = currentTaskId,
             currentUpdatedAt = currentUpdatedAt
         ) ?: matchTaskDao.getFirstTaskByStatus(
-            libraryRootUriString = libraryRootUriString,
+            sourceIds = sourceIds,
+            sourceCount = sourceIds.size,
             status = MatchTaskStatus.NeedReview,
             currentTaskId = currentTaskId
         )
@@ -977,55 +818,69 @@ class LibraryRepository(
         )
     }
 
-    suspend fun cleanupMissingFromConfiguredSources(
+    suspend fun cleanupOrphanedRecords(
         sourceIds: List<String>
-    ): Int = withContext(Dispatchers.IO) {
-        val configuredSources = bookDao.getSources().map { it.toLibrarySource() }
-        val configuredIds = configuredSources.map { it.id }
-        val targetSources = if (sourceIds.isEmpty()) {
-            configuredSources
-        } else {
-            configuredSources.filter { it.id in sourceIds }
-        }
+    ): CleanupResult = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            val configuredSources = bookDao.getSources().map { it.toLibrarySource() }
+            val configuredIds = configuredSources.map { it.id }
+            val cleanupScope = resolveCleanupScope(configuredIds, sourceIds)
+            val coversAllConfiguredSources = cleanupScope.coversAllConfiguredSources
+            val targetSources = configuredSources.filter { it.id in cleanupScope.targetSourceIds }
 
-        var deletedCount = 0
+            val mediaUris = buildList {
+                targetSources.forEach { source ->
+                    addAll(
+                        bookDao.getBookUrisMissingFromLastScan(
+                            sourceId = source.id,
+                            lastCompletedScanAt = source.lastCompletedScanAt
+                        )
+                    )
+                }
+                if (coversAllConfiguredSources) {
+                    addAll(
+                        if (configuredIds.isEmpty()) {
+                            bookDao.getAllBookUris()
+                        } else {
+                            bookDao.getBookUrisOutsideSourceIds(
+                                sourceIds = configuredIds,
+                                sourceCount = configuredIds.size
+                            )
+                        }
+                    )
+                }
+            }.distinct()
+            val deletedCount = deleteBookRecordsInTransaction(mediaUris)
+            val deletedFolders = if (coversAllConfiguredSources) {
+                if (configuredIds.isEmpty()) {
+                    bookDao.clearFolders()
+                } else {
+                    bookDao.deleteFoldersOutsideSourceIds(
+                        sourceIds = configuredIds,
+                        sourceCount = configuredIds.size
+                    )
+                }
+            } else {
+                0
+            }
 
-        for (source in targetSources) {
-            val missingUris = bookDao.getBookUrisMissingFromLastScan(
-                sourceId = source.id,
-                lastCompletedScanAt = source.lastCompletedScanAt
+            CleanupResult(
+                mediaRecordsDeleted = deletedCount,
+                folderRecordsDeleted = deletedFolders
             )
-            deletedCount += deleteBookRecords(missingUris)
         }
-
-        if (sourceIds.isEmpty() && configuredIds.isNotEmpty()) {
-            val orphanUris = bookDao.getBookUrisOutsideSourceIds(
-                sourceIds = configuredIds,
-                sourceCount = configuredIds.size
-            )
-            deletedCount += deleteBookRecords(orphanUris)
-        }
-
-        deletedCount
     }
 
-    private suspend fun deleteBookRecords(
+    private suspend fun deleteBookRecordsInTransaction(
         uriStrings: List<String>
     ): Int {
-        if (uriStrings.isEmpty()) return 0
-
-        var deleted = 0
-        uriStrings.distinct().chunked(300).forEach { chunk ->
-            db.withTransaction {
-                matchTaskDao.deleteCandidatesForBooks(chunk)
-                matchTaskDao.deleteTasksForBooks(chunk)
-                tagDao.deleteTagsForBooks(chunk)
-                bookDao.deleteByUris(chunk)
-            }
-            deleted += chunk.size
+        uriStrings.chunked(300).forEach { chunk ->
+            matchTaskDao.deleteCandidatesForBooks(chunk)
+            matchTaskDao.deleteTasksForBooks(chunk)
+            tagDao.deleteTagsForBooks(chunk)
+            bookDao.deleteByUris(chunk)
         }
-
-        return deleted
+        return uriStrings.size
     }
 
     private fun LibraryFolderEntity.toNode(): LibraryFolderNode {

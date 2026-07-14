@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.ice.hitomimanager.data.model.PageInfo
+import com.ice.hitomimanager.domain.util.NaturalOrder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
@@ -46,7 +47,7 @@ object ComicArchiveReader {
             }
         }
 
-        pages.sortedWith { a, b -> naturalCompare(a, b) }
+        pages.sortedWith(NaturalOrder::compare)
     }
 
     suspend fun extractCoverToCache(
@@ -228,40 +229,4 @@ object ComicArchiveReader {
         return ext in imageExtensions
     }
 
-    private fun naturalCompare(a: String, b: String): Int {
-        val aa = tokenizePath(a)
-        val bb = tokenizePath(b)
-
-        val max = maxOf(aa.size, bb.size)
-
-        for (i in 0 until max) {
-            val x = aa.getOrNull(i) ?: return -1
-            val y = bb.getOrNull(i) ?: return 1
-
-            val xNumber = x.all { it.isDigit() }
-            val yNumber = y.all { it.isDigit() }
-
-            val cmp = if (xNumber && yNumber) {
-                val nx = x.trimStart('0').ifEmpty { "0" }
-                val ny = y.trimStart('0').ifEmpty { "0" }
-
-                when {
-                    nx.length != ny.length -> nx.length.compareTo(ny.length)
-                    else -> nx.compareTo(ny)
-                }
-            } else {
-                x.compareTo(y)
-            }
-
-            if (cmp != 0) return cmp
-        }
-
-        return 0
-    }
-
-    private fun tokenizePath(path: String): List<String> {
-        val normalized = path.replace("\\", "/").lowercase()
-        val regex = Regex("(\\d+)|(\\D+)")
-        return regex.findAll(normalized).map { it.value }.toList()
-    }
 }
