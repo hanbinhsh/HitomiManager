@@ -38,8 +38,10 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,7 +80,8 @@ fun ReaderScreen(
     onBack: () -> Unit,
     onPageChanged: (Int) -> Unit,
     onPagePreviewRequested: (Int) -> Unit,
-    onBackToDetail: () -> Unit
+    onBackToDetail: () -> Unit,
+    onRetry: () -> Unit
 ) {
     val imagePageCount = state.pages.size
 
@@ -169,17 +172,45 @@ fun ReaderScreen(
     ) {
         when {
             state.isOpening -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator()
+                    state.remoteProgress?.let { progress ->
+                        Text(progress.stage, color = Color.White)
+                        if (progress.totalBytes > 0L) {
+                            LinearProgressIndicator(
+                                progress = {
+                                    (progress.bytesRead.toFloat() / progress.totalBytes)
+                                        .coerceIn(0f, 1f)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                "${formatReaderBytes(progress.bytesRead)} / ${formatReaderBytes(progress.totalBytes)}",
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
             }
 
             state.error != null && imagePageCount == 0 -> {
-                Text(
-                    text = state.error,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(text = state.error, color = MaterialTheme.colorScheme.error)
+                    Button(onClick = onRetry) { Text("重试") }
+                }
             }
 
             imagePageCount > 0 && readerMode == ReaderMode.Grid -> {
@@ -284,6 +315,15 @@ fun ReaderScreen(
             )
         }
     }
+}
+
+private fun formatReaderBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val kib = bytes / 1024.0
+    if (kib < 1024.0) return String.format(Locale.US, "%.1f KiB", kib)
+    val mib = kib / 1024.0
+    if (mib < 1024.0) return String.format(Locale.US, "%.1f MiB", mib)
+    return String.format(Locale.US, "%.2f GiB", mib / 1024.0)
 }
 
 private enum class ReaderMode {

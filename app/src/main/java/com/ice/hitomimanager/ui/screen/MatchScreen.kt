@@ -93,6 +93,23 @@ fun MatchScreen(
                 onRead = onRead
             )
 
+            state.remoteProgress?.let { progress ->
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        if (progress.totalBytes > 0L) {
+                            "${progress.stage} ${progress.bytesRead * 100L / progress.totalBytes}%"
+                        } else {
+                            progress.stage
+                        }
+                    )
+                }
+            }
+
             OutlinedTextField(
                 value = state.query,
                 onValueChange = onQueryChange,

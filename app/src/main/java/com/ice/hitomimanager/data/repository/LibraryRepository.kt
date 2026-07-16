@@ -21,13 +21,23 @@ import com.ice.hitomimanager.data.model.HitomiBookMeta
 import com.ice.hitomimanager.data.model.LibraryFolderNode
 import com.ice.hitomimanager.data.model.LibrarySource
 import com.ice.hitomimanager.data.model.LibrarySourceType
+import com.ice.hitomimanager.data.model.RemoteArchiveSettings
+import com.ice.hitomimanager.data.model.RemoteReaderProgress
+import com.ice.hitomimanager.data.model.RemoteIndexMode
+import com.ice.hitomimanager.data.model.WebDavSourceForm
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.toBookItem
 import com.ice.hitomimanager.data.local.entity.toEntity
 import com.ice.hitomimanager.data.local.entity.toLibrarySource
 import com.ice.hitomimanager.domain.scanner.DocumentTreeScanner
+import com.ice.hitomimanager.domain.scanner.WebDavArchiveScanner
 import com.ice.hitomimanager.domain.scanner.CoverCache
 import com.ice.hitomimanager.domain.reader.ComicArchiveReader
+import com.ice.hitomimanager.domain.reader.ComicArchiveSession
+import com.ice.hitomimanager.domain.reader.ComicArchiveSessionFactory
+import com.ice.hitomimanager.domain.reader.RemoteArchiveCache
+import com.ice.hitomimanager.data.remote.WebDavClient
+import com.ice.hitomimanager.domain.security.WebDavCredentialStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
@@ -35,11 +45,15 @@ import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import com.ice.hitomimanager.data.model.MatchTaskFilter
 import com.ice.hitomimanager.data.model.MatchTaskStatus
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import androidx.room.withTransaction
 import com.ice.hitomimanager.domain.scanner.ScanProgress
 import kotlinx.coroutines.flow.combine
 import java.io.File
+import java.io.FileNotFoundException
+import java.net.URI
+import java.util.UUID
 
 class LibraryRepository(
     private val context: Context
@@ -49,6 +63,19 @@ class LibraryRepository(
     private var tagDao = db.tagDao()
     private val scanner = DocumentTreeScanner(context)
     private val coverCache = CoverCache(context)
+    private val webDavClient = WebDavClient()
+    private val credentialStore = WebDavCredentialStore(context)
+    private val remoteArchiveCache = RemoteArchiveCache(context)
+    private val archiveSessionFactory = ComicArchiveSessionFactory(
+        context,
+        webDavClient,
+        remoteArchiveCache
+    )
+    private val webDavScanner = WebDavArchiveScanner(
+        context,
+        webDavClient,
+        archiveSessionFactory
+    )
 
     private var matchTaskDao = db.matchTaskDao()
 
@@ -61,12 +88,35 @@ class LibraryRepository(
 
     fun observeSources(): Flow<List<LibrarySource>> {
         return bookDao.observeSources().map { list ->
-            list.map { it.toLibrarySource() }
+            list.map { entity ->
+                entity.toLibrarySource().let { source ->
+                    source.copy(hasStoredPassword = credentialStore.hasPassword(source.id))
+                }
+            }
         }
     }
 
     suspend fun getSources(): List<LibrarySource> {
-        return bookDao.getSources().map { it.toLibrarySource() }
+        return bookDao.getSources().map { entity ->
+            entity.toLibrarySource().let { source ->
+                source.copy(hasStoredPassword = credentialStore.hasPassword(source.id))
+            }
+        }
+    }
+
+    suspend fun validateCachedBookAvailability(): Int = withContext(Dispatchers.IO) {
+        val unavailableUris = bookDao.getLocalBookUris().filterNot { uriString ->
+            runCatching {
+                context.contentResolver.openInputStream(Uri.parse(uriString))
+                    ?.use { input -> input.read() >= 0 }
+                    ?: false
+            }.getOrDefault(false)
+        }
+
+        unavailableUris.chunked(500).forEach { batch ->
+            bookDao.markBooksUnavailable(batch)
+        }
+        unavailableUris.size
     }
 
     suspend fun ensureLegacyLocalSource(rootUriString: String?) {
@@ -102,6 +152,73 @@ class LibraryRepository(
         return source
     }
 
+    suspend fun saveWebDavSource(form: WebDavSourceForm): LibrarySource = withContext(Dispatchers.IO) {
+        val connectTimeout = form.connectTimeoutSecondsText.toIntOrNull()?.coerceIn(5, 300)
+            ?: error("连接超时必须是 5-300 秒")
+        val readTimeout = form.readTimeoutSecondsText.toIntOrNull()?.coerceIn(5, 600)
+            ?: error("读取超时必须是 5-600 秒")
+        val baseUrl = webDavClient.normalizeBaseUrl(form.baseUrl)
+        val rootPath = normalizeRemoteRootPath(form.rootPath)
+        val old = form.editingSourceId?.let { bookDao.getSource(it)?.toLibrarySource() }
+        val now = System.currentTimeMillis()
+        val source = LibrarySource(
+            id = old?.id ?: "webdav:${UUID.randomUUID()}",
+            name = form.name.trim().ifBlank { URI(baseUrl).host ?: "WebDAV" },
+            type = LibrarySourceType.WebDav,
+            rootUriString = "webdav|$baseUrl|$rootPath",
+            webDavBaseUrl = baseUrl,
+            webDavRootPath = rootPath,
+            webDavUsername = form.username.trim().takeIf { it.isNotBlank() },
+            webDavAllowInsecureTls = form.allowInsecureTls,
+            remoteIndexMode = form.indexMode,
+            connectTimeoutSeconds = connectTimeout,
+            readTimeoutSeconds = readTimeout,
+            createdAt = old?.createdAt ?: now,
+            updatedAt = now,
+            lastCompletedScanAt = old?.lastCompletedScanAt
+        )
+        webDavClient.validateSource(source)
+        bookDao.upsertSource(source.toEntity())
+        when {
+            form.password.isNotBlank() -> credentialStore.savePassword(source.id, form.password)
+            form.username.isBlank() -> credentialStore.deletePassword(source.id)
+        }
+        source
+    }
+
+    suspend fun testWebDavSource(form: WebDavSourceForm): String = withContext(Dispatchers.IO) {
+        val editing = form.editingSourceId?.let { bookDao.getSource(it)?.toLibrarySource() }
+        val source = LibrarySource(
+            id = editing?.id ?: "webdav:test",
+            name = form.name.ifBlank { "WebDAV" },
+            type = LibrarySourceType.WebDav,
+            rootUriString = "webdav:test",
+            webDavBaseUrl = webDavClient.normalizeBaseUrl(form.baseUrl),
+            webDavRootPath = normalizeRemoteRootPath(form.rootPath),
+            webDavUsername = form.username.trim().takeIf { it.isNotBlank() },
+            webDavAllowInsecureTls = form.allowInsecureTls,
+            remoteIndexMode = form.indexMode,
+            connectTimeoutSeconds = form.connectTimeoutSecondsText.toIntOrNull()?.coerceIn(5, 300) ?: 15,
+            readTimeoutSeconds = form.readTimeoutSecondsText.toIntOrNull()?.coerceIn(5, 600) ?: 60
+        )
+        val password = form.password.takeIf { it.isNotBlank() }
+            ?: editing?.let { credentialStore.loadPassword(it.id) }
+        webDavClient.testConnection(source, password)
+    }
+
+    fun webDavFormFor(source: LibrarySource): WebDavSourceForm = WebDavSourceForm(
+        editingSourceId = source.id,
+        name = source.name,
+        baseUrl = source.webDavBaseUrl.orEmpty(),
+        rootPath = source.webDavRootPath.orEmpty().ifBlank { "/" },
+        username = source.webDavUsername.orEmpty(),
+        password = "",
+        allowInsecureTls = source.webDavAllowInsecureTls,
+        indexMode = source.remoteIndexMode,
+        connectTimeoutSecondsText = source.connectTimeoutSeconds.toString(),
+        readTimeoutSecondsText = source.readTimeoutSeconds.toString()
+    )
+
     suspend fun renameSource(sourceId: String, name: String): LibrarySource {
         val old = bookDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
         val fixedName = name.trim()
@@ -116,7 +233,62 @@ class LibraryRepository(
     }
 
     suspend fun removeSourceConfiguration(sourceId: String) {
+        credentialStore.deletePassword(sourceId)
         bookDao.deleteSource(sourceId)
+    }
+
+    suspend fun remoteCacheUsageBytes(): Long = withContext(Dispatchers.IO) {
+        remoteArchiveCache.usageBytes()
+    }
+
+    suspend fun clearRemoteArchiveCache() = withContext(Dispatchers.IO) {
+        remoteArchiveCache.clear()
+    }
+
+    suspend fun openRemoteArchiveSession(
+        book: BookItem,
+        settings: RemoteArchiveSettings,
+        allowFullDownload: Boolean,
+        onProgress: (RemoteReaderProgress) -> Unit = {}
+    ): ComicArchiveSession {
+        val source = bookDao.getSource(book.sourceId)?.toLibrarySource()
+            ?: error("远程来源配置不存在，请重新添加 WebDAV 来源")
+        require(source.type == LibrarySourceType.WebDav) { "该作品不是 WebDAV 来源" }
+        return archiveSessionFactory.openRemote(
+            book = book,
+            source = source,
+            password = credentialStore.loadPassword(source.id),
+            settings = settings,
+            allowFullDownload = allowFullDownload,
+            onProgress = onProgress
+        )
+    }
+
+    suspend fun resolveLocalPageCount(
+        book: BookItem,
+        settings: RemoteArchiveSettings,
+        allowFullDownload: Boolean,
+        onProgress: (RemoteReaderProgress) -> Unit = {}
+    ): Int? = withContext(Dispatchers.IO) {
+        book.localPageCount?.takeIf { it > 0 }?.let { return@withContext it }
+        val source = bookDao.getSource(book.sourceId)?.toLibrarySource()
+        val pageCount = if (source?.type == LibrarySourceType.WebDav) {
+            openRemoteArchiveSession(book, settings, allowFullDownload, onProgress).use { session ->
+                session.listPages().size
+            }
+        } else {
+            ComicArchiveReader.listPages(context, Uri.parse(book.uriString)).size
+        }.takeIf { it > 0 }
+        if (pageCount != null) {
+            bookDao.updateArchiveIndex(
+                uriString = book.uriString,
+                coverFilePath = null,
+                localPageCount = pageCount,
+                remoteEtag = book.remoteEtag,
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+        pageCount
     }
 
     fun pagedBooksForSourceIds(
@@ -237,41 +409,102 @@ class LibraryRepository(
     }
 
     suspend fun repairMissingCover(
-        book: BookItem
+        book: BookItem,
+        remoteSettings: RemoteArchiveSettings = RemoteArchiveSettings()
     ) {
         withContext(Dispatchers.IO) {
-            val currentPath = book.coverFilePath
-            if (!currentPath.isNullOrBlank() && File(currentPath).exists()) {
-                return@withContext
+            try {
+                val currentPath = book.coverFilePath
+                if (!currentPath.isNullOrBlank() && File(currentPath).exists()) {
+                    return@withContext
+                }
+
+                val source = bookDao.getSource(book.sourceId)?.toLibrarySource()
+                if (source?.type == LibrarySourceType.WebDav) {
+                    openRemoteArchiveSession(
+                        book = book,
+                        settings = remoteSettings,
+                        allowFullDownload = true
+                    ).use { session ->
+                        val pages = session.listPages()
+                        val coverFile = session.extractPersistentCover()
+                        bookDao.updateArchiveIndex(
+                            uriString = book.uriString,
+                            coverFilePath = coverFile?.absolutePath,
+                            localPageCount = pages.size.takeIf { it > 0 },
+                            remoteEtag = book.remoteEtag,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        if (coverFile != null) {
+                            matchTaskDao.updateCoverFilePathForBook(
+                                bookUriString = book.uriString,
+                                coverFilePath = coverFile.absolutePath,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                    return@withContext
+                }
+
+                val documentFile = DocumentFile.fromSingleUri(
+                    context,
+                    Uri.parse(book.uriString)
+                ) ?: run {
+                    bookDao.markBookUnavailable(book.uriString)
+                    return@withContext
+                }
+                if (!documentFile.exists()) {
+                    bookDao.markBookUnavailable(book.uriString)
+                    return@withContext
+                }
+
+                val coverFile = ComicArchiveReader.extractCoverToPersistentCache(
+                    context = context,
+                    archiveUri = documentFile.uri
+                ) ?: return@withContext
+
+                coverCache.saveCover(
+                    file = documentFile,
+                    coverPath = coverFile.absolutePath
+                )
+
+                val now = System.currentTimeMillis()
+                bookDao.updateCoverFilePath(
+                    uriString = book.uriString,
+                    coverFilePath = coverFile.absolutePath,
+                    updatedAt = now
+                )
+                matchTaskDao.updateCoverFilePathForBook(
+                    bookUriString = book.uriString,
+                    coverFilePath = coverFile.absolutePath,
+                    updatedAt = now
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (isUnavailableArchiveError(error)) {
+                    bookDao.markBookUnavailable(book.uriString)
+                    return@withContext
+                }
+                throw error
             }
-
-            val documentFile = DocumentFile.fromSingleUri(
-                context,
-                Uri.parse(book.uriString)
-            ) ?: return@withContext
-
-            val coverFile = ComicArchiveReader.extractCoverToPersistentCache(
-                context = context,
-                archiveUri = documentFile.uri
-            ) ?: return@withContext
-
-            coverCache.saveCover(
-                file = documentFile,
-                coverPath = coverFile.absolutePath
-            )
-
-            val now = System.currentTimeMillis()
-            bookDao.updateCoverFilePath(
-                uriString = book.uriString,
-                coverFilePath = coverFile.absolutePath,
-                updatedAt = now
-            )
-            matchTaskDao.updateCoverFilePathForBook(
-                bookUriString = book.uriString,
-                coverFilePath = coverFile.absolutePath,
-                updatedAt = now
-            )
         }
+    }
+
+    private fun isUnavailableArchiveError(error: Throwable): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            if (cause is FileNotFoundException || cause is SecurityException) return true
+            val message = cause.message.orEmpty()
+            if (
+                message.contains("Missing file", ignoreCase = true) ||
+                message.contains("does not exist", ignoreCase = true) ||
+                message.contains("permission", ignoreCase = true)
+            ) {
+                return true
+            }
+            cause = cause.cause
+        }
+        return false
     }
 
     suspend fun clearDatabase() {
@@ -335,6 +568,12 @@ class LibraryRepository(
                 deleteDatabaseSidecarFiles(databaseFile)
                 reconnectDatabase()
                 db.openHelper.writableDatabase
+                db.withTransaction {
+                    bookDao.markAllSourcesAwaitingRescan(
+                        scanBoundary = Long.MAX_VALUE,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                }
                 backupFile.delete()
                 DatabaseImportResult(
                     importedBytes = importedBytes,
@@ -516,6 +755,7 @@ class LibraryRepository(
 
     suspend fun scanSource(
         sourceId: String,
+        remoteSettings: RemoteArchiveSettings = RemoteArchiveSettings(),
         onProgress: (ScanProgress) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
         val source = bookDao.getSource(sourceId)?.toLibrarySource() ?: error("目录来源不存在")
@@ -561,20 +801,34 @@ class LibraryRepository(
             }
         }
 
-        val folders = scanner.scan(
-            treeUri = Uri.parse(rootUriString),
-            onProgress = onProgress,
-            onDiscovered = { discoveredUris ->
-                scannedUris.clear()
-                scannedUris.addAll(discoveredUris)
-            },
-            onBook = { scannedBook ->
-                pendingBooks += scannedBook
-                if (pendingBooks.size >= SCAN_TX_CHUNK) {
-                    flushPendingBooks()
-                }
-            }
-        )
+        val onScannedBook: suspend (com.ice.hitomimanager.domain.scanner.ScannedBook) -> Unit = { scannedBook ->
+            scannedUris += scannedBook.uriString
+            pendingBooks += scannedBook
+            if (pendingBooks.size >= SCAN_TX_CHUNK) flushPendingBooks()
+        }
+        val folders = if (source.type == LibrarySourceType.WebDav) {
+            val known = bookDao.getBooksForSource(source.id)
+                .associate { it.uriString to it.toBookItem() }
+            webDavScanner.scan(
+                source = source,
+                password = credentialStore.loadPassword(source.id),
+                known = known,
+                archiveSettings = remoteSettings,
+                onProgress = onProgress,
+                onDirectoryFailure = { hadPersistenceFailure = true },
+                onBook = onScannedBook
+            )
+        } else {
+            scanner.scan(
+                treeUri = Uri.parse(rootUriString),
+                onProgress = onProgress,
+                onDiscovered = { discoveredUris ->
+                    scannedUris.clear()
+                    scannedUris.addAll(discoveredUris)
+                },
+                onBook = onScannedBook
+            )
+        }
         flushPendingBooks()
 
         db.withTransaction {
@@ -629,6 +883,8 @@ class LibraryRepository(
                             fileSize = scanned.fileSize,
                             lastModified = scanned.lastModified,
                             coverFilePath = scanned.coverFilePath ?: oldBySameUri.coverFilePath,
+                            localPageCount = scanned.localPageCount ?: oldBySameUri.localPageCount,
+                            remoteEtag = scanned.remoteEtag ?: oldBySameUri.remoteEtag,
                             lastSeenAt = scanStartedAt,
                             updatedAt = updatedAt
                         )
@@ -663,9 +919,16 @@ class LibraryRepository(
                     matchTaskDao.migrateBookUri(
                         oldUriString = movedOld.uriString,
                         newUriString = scanned.uriString,
-                        libraryRootUriString = rootUriString,
+                        libraryRootUriString = source.id,
                         displayName = scanned.displayName,
                         coverFilePath = coverFilePath,
+                        updatedAt = updatedAt
+                    )
+                    bookDao.updateArchiveIndex(
+                        uriString = scanned.uriString,
+                        coverFilePath = coverFilePath,
+                        localPageCount = scanned.localPageCount ?: movedOld.localPageCount,
+                        remoteEtag = scanned.remoteEtag ?: movedOld.remoteEtag,
                         updatedAt = updatedAt
                     )
                     return@bookLoop
@@ -682,6 +945,8 @@ class LibraryRepository(
                         fileSize = scanned.fileSize,
                         lastModified = scanned.lastModified,
                         coverFilePath = scanned.coverFilePath,
+                        localPageCount = scanned.localPageCount,
+                        remoteEtag = scanned.remoteEtag,
                         createdAt = updatedAt,
                         updatedAt = updatedAt,
                         lastSeenAt = scanStartedAt
@@ -897,6 +1162,11 @@ class LibraryRepository(
         return DocumentFile.fromTreeUri(context, uri)?.name
             ?: uri.lastPathSegment?.substringAfterLast(':')?.takeIf { it.isNotBlank() }
             ?: "本地目录"
+    }
+
+    private fun normalizeRemoteRootPath(value: String): String {
+        val fixed = value.trim().replace('\\', '/').trim('/')
+        return if (fixed.isBlank()) "/" else "/$fixed"
     }
 
     private fun makeTagKey(

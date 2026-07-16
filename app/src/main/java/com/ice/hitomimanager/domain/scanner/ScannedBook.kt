@@ -6,6 +6,8 @@ data class ScannedBook(
     val fileSize: Long,
     val lastModified: Long,
     val coverFilePath: String?,
+    val localPageCount: Int? = null,
+    val remoteEtag: String? = null,
     val relativePath: String? = null,
     val parentPath: String? = null
 )

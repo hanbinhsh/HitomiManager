@@ -10,6 +10,17 @@ import com.ice.hitomimanager.data.local.entity.LibrarySourceEntity
 import com.ice.hitomimanager.data.model.TagCountItem
 import kotlinx.coroutines.flow.Flow
 
+private const val ACTIVE_BOOK_FILTER = """
+AND EXISTS (
+    SELECT 1 FROM library_source AS active_source
+    WHERE active_source.id = b.sourceId
+      AND (
+          active_source.lastCompletedScanAt IS NULL
+          OR b.lastSeenAt >= active_source.lastCompletedScanAt
+      )
+)
+"""
+
 @Dao
 interface BookDao {
 
@@ -28,16 +39,74 @@ interface BookDao {
     @Upsert
     suspend fun upsertSource(source: LibrarySourceEntity)
 
+    @Query("UPDATE library_source SET lastCompletedScanAt = :scanBoundary, updatedAt = :updatedAt")
+    suspend fun markAllSourcesAwaitingRescan(scanBoundary: Long, updatedAt: Long)
+
     @Query("DELETE FROM library_source WHERE id = :sourceId")
     suspend fun deleteSource(sourceId: String)
 
     @Query("UPDATE library_folder SET sourceName = :name WHERE sourceId = :sourceId")
     suspend fun updateFolderSourceName(sourceId: String, name: String)
 
-    @Query("SELECT * FROM library_folder WHERE sourceId = :sourceId AND COALESCE(parentPath, '') = :parentPath ORDER BY name COLLATE NOCASE ASC")
+    @Query(
+        """
+        SELECT folder.* FROM library_folder AS folder
+        WHERE folder.sourceId = :sourceId
+          AND COALESCE(folder.parentPath, '') = :parentPath
+          AND EXISTS (
+              SELECT 1 FROM library_source AS active_source
+              WHERE active_source.id = folder.sourceId
+                AND (
+                    active_source.lastCompletedScanAt IS NULL
+                    OR folder.updatedAt >= active_source.lastCompletedScanAt
+                )
+          )
+          AND EXISTS (
+              SELECT 1 FROM book AS active_book
+              INNER JOIN library_source AS book_source ON book_source.id = active_book.sourceId
+              WHERE active_book.sourceId = folder.sourceId
+                AND (
+                    active_book.parentPath = folder.path
+                    OR active_book.relativePath LIKE folder.path || '/%'
+                )
+                AND (
+                    book_source.lastCompletedScanAt IS NULL
+                    OR active_book.lastSeenAt >= book_source.lastCompletedScanAt
+                )
+          )
+        ORDER BY folder.name COLLATE NOCASE ASC
+        """
+    )
     fun observeChildFolders(sourceId: String, parentPath: String): Flow<List<LibraryFolderEntity>>
 
-    @Query("SELECT * FROM library_folder WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds)) ORDER BY sourceName COLLATE NOCASE ASC, path COLLATE NOCASE ASC")
+    @Query(
+        """
+        SELECT folder.* FROM library_folder AS folder
+        WHERE (:sourceCount = 0 OR folder.sourceId IN (:sourceIds))
+          AND EXISTS (
+              SELECT 1 FROM library_source AS active_source
+              WHERE active_source.id = folder.sourceId
+                AND (
+                    active_source.lastCompletedScanAt IS NULL
+                    OR folder.updatedAt >= active_source.lastCompletedScanAt
+                )
+          )
+          AND EXISTS (
+              SELECT 1 FROM book AS active_book
+              INNER JOIN library_source AS book_source ON book_source.id = active_book.sourceId
+              WHERE active_book.sourceId = folder.sourceId
+                AND (
+                    active_book.parentPath = folder.path
+                    OR active_book.relativePath LIKE folder.path || '/%'
+                )
+                AND (
+                    book_source.lastCompletedScanAt IS NULL
+                    OR active_book.lastSeenAt >= book_source.lastCompletedScanAt
+                )
+          )
+        ORDER BY folder.sourceName COLLATE NOCASE ASC, folder.path COLLATE NOCASE ASC
+        """
+    )
     fun observeFoldersForSourceIds(
         sourceIds: List<String>,
         sourceCount: Int
@@ -68,6 +137,7 @@ interface BookDao {
         """
         SELECT b.* FROM book b
         WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+        """ + ACTIVE_BOOK_FILTER + """
           AND (
             :query = ''
             OR LOWER(b.displayName) LIKE '%' || LOWER(:query) || '%'
@@ -125,6 +195,7 @@ interface BookDao {
         """
         SELECT COUNT(*) FROM book b
         WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+        """ + ACTIVE_BOOK_FILTER + """
           AND (
             :query = ''
             OR LOWER(b.displayName) LIKE '%' || LOWER(:query) || '%'
@@ -169,10 +240,11 @@ interface BookDao {
 
     @Query(
         """
-        SELECT * FROM book
-        WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-          AND COALESCE(parentPath, '') = ''
-        ORDER BY displayName COLLATE NOCASE ASC
+        SELECT b.* FROM book AS b
+        WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+        """ + ACTIVE_BOOK_FILTER + """
+          AND COALESCE(b.parentPath, '') = ''
+        ORDER BY b.displayName COLLATE NOCASE ASC
         """
     )
     fun observeRootBooksForSourceIds(
@@ -183,16 +255,17 @@ interface BookDao {
     @Query(
         """
     SELECT
-        'language:' || lower(language) AS tagKey,
+        'language:' || lower(b.language) AS tagKey,
         'language' AS namespace,
-        language AS name,
+        b.language AS name,
         NULL AS translatedName,
         COUNT(*) AS bookCount
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND language IS NOT NULL
-      AND language != ''
-    GROUP BY lower(language), language
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND b.language IS NOT NULL
+      AND b.language != ''
+    GROUP BY lower(b.language), b.language
     """
     )
     fun observeLanguageFacetCountsForSourceIds(
@@ -203,16 +276,17 @@ interface BookDao {
     @Query(
         """
     SELECT
-        'type:' || lower(type) AS tagKey,
+        'type:' || lower(b.type) AS tagKey,
         'type' AS namespace,
-        type AS name,
+        b.type AS name,
         NULL AS translatedName,
         COUNT(*) AS bookCount
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND type IS NOT NULL
-      AND type != ''
-    GROUP BY lower(type), type
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND b.type IS NOT NULL
+      AND b.type != ''
+    GROUP BY lower(b.type), b.type
     """
     )
     fun observeTypeFacetCountsForSourceIds(
@@ -270,16 +344,17 @@ interface BookDao {
 
     @Query(
         """
-    SELECT *
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+    SELECT b.*
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND (b.sourceGalleryId IS NULL OR b.sourceGalleryId = '')
       AND NOT EXISTS (
           SELECT 1
           FROM match_task
-          WHERE match_task.bookUriString = book.uriString
+          WHERE match_task.bookUriString = b.uriString
       )
-    ORDER BY displayName COLLATE NOCASE ASC
+    ORDER BY b.displayName COLLATE NOCASE ASC
     """
     )
     suspend fun getUnmatchedBooksForSourceIds(
@@ -289,16 +364,17 @@ interface BookDao {
 
     @Query(
         """
-    SELECT *
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+    SELECT b.*
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND (b.sourceGalleryId IS NULL OR b.sourceGalleryId = '')
       AND NOT EXISTS (
           SELECT 1
           FROM match_task
-          WHERE match_task.bookUriString = book.uriString
+          WHERE match_task.bookUriString = b.uriString
       )
-    ORDER BY displayName COLLATE NOCASE ASC
+    ORDER BY b.displayName COLLATE NOCASE ASC
     """
     )
     fun observeUnqueuedUnmatchedBooksForSourceIds(
@@ -309,13 +385,14 @@ interface BookDao {
     @Query(
         """
     SELECT COUNT(*)
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND (b.sourceGalleryId IS NULL OR b.sourceGalleryId = '')
       AND NOT EXISTS (
           SELECT 1
           FROM match_task
-          WHERE match_task.bookUriString = book.uriString
+          WHERE match_task.bookUriString = b.uriString
       )
     """
     )
@@ -327,13 +404,14 @@ interface BookDao {
     @Query(
         """
     SELECT COUNT(*)
-    FROM book
-    WHERE (:sourceCount = 0 OR sourceId IN (:sourceIds))
-      AND (sourceGalleryId IS NULL OR sourceGalleryId = '')
+    FROM book AS b
+    WHERE (:sourceCount = 0 OR b.sourceId IN (:sourceIds))
+    """ + ACTIVE_BOOK_FILTER + """
+      AND (b.sourceGalleryId IS NULL OR b.sourceGalleryId = '')
       AND NOT EXISTS (
           SELECT 1
           FROM match_task
-          WHERE match_task.bookUriString = book.uriString
+          WHERE match_task.bookUriString = b.uriString
       )
     """
     )
@@ -344,11 +422,12 @@ interface BookDao {
 
     @Query(
         """
-    SELECT *
-    FROM book
-    WHERE sourceId = :sourceId
-      AND COALESCE(parentPath, '') = :parentPath
-    ORDER BY displayName COLLATE NOCASE ASC
+    SELECT b.*
+    FROM book AS b
+    WHERE b.sourceId = :sourceId
+    """ + ACTIVE_BOOK_FILTER + """
+      AND COALESCE(b.parentPath, '') = :parentPath
+    ORDER BY b.displayName COLLATE NOCASE ASC
     """
     )
     fun observeBooksInFolder(
@@ -385,6 +464,42 @@ interface BookDao {
 
     @Query("SELECT uriString FROM book")
     suspend fun getAllBookUris(): List<String>
+
+    @Query(
+        """
+        SELECT b.uriString FROM book b
+        INNER JOIN library_source s ON s.id = b.sourceId
+        WHERE s.type = 'LocalSaf'
+        """
+    )
+    suspend fun getLocalBookUris(): List<String>
+
+    @Query("SELECT * FROM book WHERE sourceId = :sourceId")
+    suspend fun getBooksForSource(sourceId: String): List<BookEntity>
+
+    @Query(
+        """
+        UPDATE book
+        SET coverFilePath = COALESCE(:coverFilePath, coverFilePath),
+            localPageCount = COALESCE(:localPageCount, localPageCount),
+            remoteEtag = COALESCE(:remoteEtag, remoteEtag),
+            updatedAt = :updatedAt
+        WHERE uriString = :uriString
+        """
+    )
+    suspend fun updateArchiveIndex(
+        uriString: String,
+        coverFilePath: String?,
+        localPageCount: Int?,
+        remoteEtag: String?,
+        updatedAt: Long
+    )
+
+    @Query("UPDATE book SET lastSeenAt = NULL WHERE uriString = :uriString")
+    suspend fun markBookUnavailable(uriString: String)
+
+    @Query("UPDATE book SET lastSeenAt = NULL WHERE uriString IN (:uriStrings)")
+    suspend fun markBooksUnavailable(uriStrings: List<String>)
 
     @Query("DELETE FROM book WHERE uriString IN (:uriStrings)")
     suspend fun deleteByUris(uriStrings: List<String>)

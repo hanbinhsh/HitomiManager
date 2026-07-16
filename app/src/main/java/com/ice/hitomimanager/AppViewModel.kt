@@ -14,6 +14,7 @@ import com.ice.hitomimanager.data.model.BookItem
 import com.ice.hitomimanager.data.model.BookSortMode
 import com.ice.hitomimanager.data.model.PageInfo
 import com.ice.hitomimanager.domain.reader.ComicArchiveReader
+import com.ice.hitomimanager.domain.reader.ComicArchiveSession
 import com.ice.hitomimanager.domain.scanner.LibraryScanCoordinator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,6 +47,11 @@ import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.LibraryFolderNode
 import com.ice.hitomimanager.data.model.LibrarySource
 import com.ice.hitomimanager.data.model.LibrarySourceScope
+import com.ice.hitomimanager.data.model.LibrarySourceType
+import com.ice.hitomimanager.data.model.RemoteArchiveReadMode
+import com.ice.hitomimanager.data.model.RemoteArchiveSettings
+import com.ice.hitomimanager.data.model.RemoteCachePolicy
+import com.ice.hitomimanager.data.model.WebDavSourceForm
 import com.ice.hitomimanager.data.model.TagFilterTab
 import java.util.Locale
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -125,6 +131,8 @@ class AppViewModel(
 
     private val _readerState = MutableStateFlow(ReaderUiState())
     val readerState: StateFlow<ReaderUiState> = _readerState.asStateFlow()
+    private var readerArchiveSession: ComicArchiveSession? = null
+    private var readerOpenJob: Job? = null
 
     private var matchTaskDetailJob: Job? = null
     private var matchTaskCandidateJob: Job? = null
@@ -188,6 +196,13 @@ class AppViewModel(
             }.getOrDefault(LibraryLayoutMode.List),
 
             libraryGridColumns = prefs.getInt(KEY_LIBRARY_GRID_COLUMNS, 3),
+            remoteArchiveReadMode = readRemoteArchiveReadMode(),
+            remoteCachePolicy = readRemoteCachePolicy(),
+            remoteCacheLimitMb = prefs.getInt(KEY_REMOTE_CACHE_LIMIT_MB, 2048).coerceIn(128, 32768),
+            remoteCacheLimitMbText = prefs.getInt(KEY_REMOTE_CACHE_LIMIT_MB, 2048).coerceIn(128, 32768).toString(),
+            remoteRangeBlockSizeKb = prefs.getInt(KEY_REMOTE_RANGE_BLOCK_SIZE_KB, 512).coerceIn(64, 4096),
+            remoteRangeBlockSizeKbText = prefs.getInt(KEY_REMOTE_RANGE_BLOCK_SIZE_KB, 512).coerceIn(64, 4096).toString(),
+            allowBatchRemoteFullDownload = prefs.getBoolean(KEY_ALLOW_BATCH_REMOTE_FULL_DOWNLOAD, false),
         )
     )
 
@@ -202,7 +217,17 @@ class AppViewModel(
                 reportStartupDataError(error)
                 return@launch
             }
+            if (!prefs.getBoolean(KEY_LOCAL_ARCHIVE_AVAILABILITY_CHECK_V3, false)) {
+                runCatching {
+                    libraryRepository.validateCachedBookAvailability()
+                }.onSuccess {
+                    prefs.edit()
+                        .putBoolean(KEY_LOCAL_ARCHIVE_AVAILABILITY_CHECK_V3, true)
+                        .apply()
+                }
+            }
             observeSources()
+            refreshRemoteCacheUsage()
         }
     }
 
@@ -574,7 +599,10 @@ class AppViewModel(
 
                 viewModelScope.launch {
                     try {
-                        libraryRepository.repairMissingCover(book)
+                        libraryRepository.repairMissingCover(book, remoteArchiveSettings())
+                    } catch (error: Throwable) {
+                        if (error is CancellationException) throw error
+                        // 封面修复是后台增强，不应因单个损坏或暂不可访问的压缩包终止应用。
                     } finally {
                         coverRepairingBookUris.remove(book.uriString)
                     }
@@ -755,11 +783,14 @@ class AppViewModel(
             label = "全部",
             sourceIds = emptyList()
         )
-        scopes += LibrarySourceScope(
-            key = LOCAL_SOURCES_KEY,
-            label = "本地",
-            sourceIds = sources.map { it.id }
-        )
+        val localSourceIds = sources.filter { it.type == LibrarySourceType.LocalSaf }.map { it.id }
+        if (localSourceIds.isNotEmpty()) {
+            scopes += LibrarySourceScope(
+                key = LOCAL_SOURCES_KEY,
+                label = "本地",
+                sourceIds = localSourceIds
+            )
+        }
         sources.forEach { source ->
             scopes += LibrarySourceScope(
                 key = sourceScopeKey(source.id),
@@ -850,7 +881,7 @@ class AppViewModel(
                         runCatching {
                             processOneBatchMatchBook(
                                 book = book,
-                                libraryRootUriString = book.libraryRootUriString ?: book.sourceId
+                                libraryRootUriString = book.sourceId
                             )
                         }.onFailure {
                             // 单个任务失败不终止整个批量匹配
@@ -927,12 +958,18 @@ class AppViewModel(
     ) {
         val query = buildMatchQueryFromName(book.displayName)
 
-        val localPageCount = runCatching {
-            ComicArchiveReader.listPages(
-                context = app,
-                archiveUri = Uri.parse(book.uriString)
-            ).size
-        }.getOrNull()
+        var pageCountError: String? = null
+        val localPageCount = try {
+            libraryRepository.resolveLocalPageCount(
+                book = book,
+                settings = remoteArchiveSettings(),
+                allowFullDownload = _settingsState.value.allowBatchRemoteFullDownload
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            pageCountError = error.message
+            null
+        }
 
         val taskId = libraryRepository.createMatchTask(
             book = book,
@@ -948,6 +985,25 @@ class AppViewModel(
             updatedAt = System.currentTimeMillis()
         )
         libraryRepository.updateMatchTask(running)
+
+        if (localPageCount == null || localPageCount <= 0) {
+            val remoteHint = if (
+                book.uriString.startsWith("http", ignoreCase = true) &&
+                !_settingsState.value.allowBatchRemoteFullDownload
+            ) {
+                "；如服务器不支持 Range，请在阅读设置中允许批量任务完整下载"
+            } else {
+                ""
+            }
+            libraryRepository.updateMatchTask(
+                running.copy(
+                    status = MatchTaskStatus.Skipped,
+                    errorMessage = "无法读取本地页数：${pageCountError.orEmpty()}$remoteHint".trimEnd('：'),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            return
+        }
 
         executeMatchTaskSearch(
             task = running,
@@ -1535,7 +1591,7 @@ class AppViewModel(
     }
 
     fun skipUnqueuedBook(book: BookItem) {
-        val root = book.libraryRootUriString ?: book.sourceId
+        val root = book.sourceId
         if (root.isBlank()) return
 
         viewModelScope.launch {
@@ -1828,15 +1884,33 @@ class AppViewModel(
     }
 
     fun openBook(book: BookItem) {
+        readerOpenJob?.cancel()
+        readerArchiveSession?.close()
+        readerArchiveSession = null
         _readerState.value = ReaderUiState(
             book = book,
             isOpening = true
         )
 
-        viewModelScope.launch {
+        readerOpenJob = viewModelScope.launch {
             try {
                 val archiveUri = Uri.parse(book.uriString)
-                val pages = ComicArchiveReader.listPages(app, archiveUri)
+                val isRemote = _libraryState.value.librarySources
+                    .firstOrNull { it.id == book.sourceId }
+                    ?.type == LibrarySourceType.WebDav
+                val remoteSession = if (isRemote) {
+                    libraryRepository.openRemoteArchiveSession(
+                        book = book,
+                        settings = remoteArchiveSettings(),
+                        allowFullDownload = true
+                    ) { progress ->
+                        _readerState.update { it.copy(remoteProgress = progress) }
+                    }.also { readerArchiveSession = it }
+                } else {
+                    null
+                }
+                val pages = remoteSession?.listPages()
+                    ?: ComicArchiveReader.listPages(app, archiveUri)
 
                 if (pages.isEmpty()) {
                     _readerState.value = ReaderUiState(
@@ -1855,12 +1929,13 @@ class AppViewModel(
                 for (index in 0..2) {
                     if (index !in pages.indices) continue
 
-                    val extracted = ComicArchiveReader.extractPageWithInfo(
-                        context = app,
-                        archiveUri = archiveUri,
-                        entryName = pages[index],
-                        pageIndex = index
-                    )
+                    val extracted = remoteSession?.extractPage(pages[index], index)
+                        ?: ComicArchiveReader.extractPageWithInfo(
+                            context = app,
+                            archiveUri = archiveUri,
+                            entryName = pages[index],
+                            pageIndex = index
+                        )
 
                     if (extracted != null) {
                         initialFiles[index] = extracted.file
@@ -1874,7 +1949,8 @@ class AppViewModel(
                     pageIndex = 0,
                     pageFiles = initialFiles,
                     pageInfos = initialInfos,
-                    isOpening = false
+                    isOpening = false,
+                    remoteProgress = null
                 )
 
                 preloadAround(0)
@@ -1916,16 +1992,31 @@ class AppViewModel(
         )
 
         viewModelScope.launch {
-            val pageCount = runCatching {
-                ComicArchiveReader.listPages(
-                    context = app,
-                    archiveUri = Uri.parse(book.uriString)
-                ).size
-            }.getOrNull()
+            val pageCountResult = runCatching {
+                libraryRepository.resolveLocalPageCount(
+                    book = book,
+                    settings = remoteArchiveSettings(),
+                    allowFullDownload = true,
+                    onProgress = { progress ->
+                        _matchState.update { current ->
+                            if (current.book?.uriString == book.uriString) {
+                                current.copy(remoteProgress = progress)
+                            } else {
+                                current
+                            }
+                        }
+                    }
+                )
+            }
+            val pageCount = pageCountResult.getOrNull()
 
             _matchState.update { state ->
                 if (state.book?.uriString == book.uriString) {
-                    state.copy(localPageCount = pageCount)
+                    state.copy(
+                        localPageCount = pageCount,
+                        remoteProgress = null,
+                        error = pageCountResult.exceptionOrNull()?.message
+                    )
                 } else {
                     state
                 }
@@ -2074,6 +2165,8 @@ class AppViewModel(
                     it.copy(isBinding = false, error = null)
                 }
                 onSuccess()
+            } catch (error: CancellationException) {
+                throw error
             } catch (e: Exception) {
                 _matchState.update {
                     it.copy(
@@ -2324,10 +2417,14 @@ class AppViewModel(
             stopDatabaseObservers()
             try {
                 val result = libraryRepository.importDatabaseFrom(uri)
+                prefs.edit()
+                    .putBoolean(KEY_LOCAL_ARCHIVE_AVAILABILITY_CHECK_V3, true)
+                    .apply()
                 _libraryState.update {
                     it.copy(error =
                         "数据库已导入（版本 ${result.databaseVersion}，" +
-                            "${result.importedBytes} 字节）；重新扫描后会按文件名和大小恢复绑定"
+                            "${result.importedBytes} 字节）；旧记录已保留并暂时隐藏，" +
+                            "重新绑定目录并扫描后会按文件名和大小恢复"
                     )
                 }
             } catch (e: Exception) {
@@ -2337,6 +2434,53 @@ class AppViewModel(
             } finally {
                 reloadAfterDatabaseSwap()
             }
+        }
+    }
+
+    fun closeReader() {
+        readerOpenJob?.cancel()
+        readerOpenJob = null
+        readerArchiveSession?.close()
+        readerArchiveSession = null
+        _readerState.value = ReaderUiState()
+        refreshRemoteCacheUsage()
+    }
+
+    fun saveWebDavSource(form: WebDavSourceForm) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.saveWebDavSource(form) }
+                .onSuccess { source ->
+                    _settingsState.update {
+                        it.copy(webDavMessage = "已保存 ${source.name}")
+                    }
+                    scanSource(source.id)
+                }
+                .onFailure { error ->
+                    _settingsState.update {
+                        it.copy(webDavMessage = error.message ?: "保存 WebDAV 失败")
+                    }
+                }
+        }
+    }
+
+    fun testWebDavSource(form: WebDavSourceForm) {
+        if (_settingsState.value.isTestingWebDav) return
+        _settingsState.update { it.copy(isTestingWebDav = true, webDavMessage = null) }
+        viewModelScope.launch {
+            runCatching { libraryRepository.testWebDavSource(form) }
+                .onSuccess { message ->
+                    _settingsState.update {
+                        it.copy(isTestingWebDav = false, webDavMessage = message)
+                    }
+                }
+                .onFailure { error ->
+                    _settingsState.update {
+                        it.copy(
+                            isTestingWebDav = false,
+                            webDavMessage = error.message ?: "WebDAV 连接测试失败"
+                        )
+                    }
+                }
         }
     }
 
@@ -2464,6 +2608,7 @@ class AppViewModel(
                 for (sourceId in targetSourceIds) {
                     libraryRepository.scanSource(
                         sourceId = sourceId,
+                        remoteSettings = remoteArchiveSettings(),
                         onProgress = { progress ->
                             _libraryState.update {
                                 it.copy(
@@ -2551,15 +2696,15 @@ class AppViewModel(
 
         viewModelScope.launch {
             try {
-                val archiveUri = Uri.parse(book.uriString)
                 val entryName = pages[index]
 
-                val extracted = ComicArchiveReader.extractPageWithInfo(
-                    context = app,
-                    archiveUri = archiveUri,
-                    entryName = entryName,
-                    pageIndex = index
-                )
+                val extracted = readerArchiveSession?.extractPage(entryName, index)
+                    ?: ComicArchiveReader.extractPageWithInfo(
+                        context = app,
+                        archiveUri = Uri.parse(book.uriString),
+                        entryName = entryName,
+                        pageIndex = index
+                    )
 
                 _readerState.update { current ->
                     val newFiles = if (extracted != null) {
@@ -2828,6 +2973,105 @@ class AppViewModel(
         }
     }
 
+    fun setRemoteArchiveReadMode(mode: RemoteArchiveReadMode) {
+        prefs.edit().putString(KEY_REMOTE_ARCHIVE_READ_MODE, mode.name).apply()
+        _settingsState.update { it.copy(remoteArchiveReadMode = mode) }
+    }
+
+    fun setRemoteCachePolicy(policy: RemoteCachePolicy) {
+        prefs.edit().putString(KEY_REMOTE_CACHE_POLICY, policy.name).apply()
+        _settingsState.update { it.copy(remoteCachePolicy = policy) }
+    }
+
+    fun setRemoteCacheLimitMb(raw: String) {
+        val text = raw.filter(Char::isDigit).take(5)
+        val value = text.toIntOrNull()
+        if (value == null) {
+            _settingsState.update { it.copy(remoteCacheLimitMbText = text) }
+            return
+        }
+        val fixed = value.coerceIn(128, 32768)
+        prefs.edit().putInt(KEY_REMOTE_CACHE_LIMIT_MB, fixed).apply()
+        _settingsState.update {
+            it.copy(remoteCacheLimitMbText = text, remoteCacheLimitMb = fixed)
+        }
+    }
+
+    fun setRemoteRangeBlockSizeKb(raw: String) {
+        val text = raw.filter(Char::isDigit).take(4)
+        val value = text.toIntOrNull()
+        if (value == null) {
+            _settingsState.update { it.copy(remoteRangeBlockSizeKbText = text) }
+            return
+        }
+        val fixed = value.coerceIn(64, 4096)
+        prefs.edit().putInt(KEY_REMOTE_RANGE_BLOCK_SIZE_KB, fixed).apply()
+        _settingsState.update {
+            it.copy(remoteRangeBlockSizeKbText = text, remoteRangeBlockSizeKb = fixed)
+        }
+    }
+
+    fun setAllowBatchRemoteFullDownload(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ALLOW_BATCH_REMOTE_FULL_DOWNLOAD, enabled).apply()
+        _settingsState.update { it.copy(allowBatchRemoteFullDownload = enabled) }
+    }
+
+    fun clearRemoteArchiveCache() {
+        viewModelScope.launch {
+            runCatching { libraryRepository.clearRemoteArchiveCache() }
+                .onSuccess {
+                    _settingsState.update {
+                        it.copy(remoteCacheUsageBytes = 0L, webDavMessage = "远程压缩包缓存已清空")
+                    }
+                }
+                .onFailure { error ->
+                    _settingsState.update {
+                        it.copy(webDavMessage = error.message ?: "清理远程缓存失败")
+                    }
+                }
+        }
+    }
+
+    private fun refreshRemoteCacheUsage() {
+        viewModelScope.launch {
+            val bytes = runCatching { libraryRepository.remoteCacheUsageBytes() }.getOrDefault(0L)
+            _settingsState.update { it.copy(remoteCacheUsageBytes = bytes) }
+        }
+    }
+
+    private fun remoteArchiveSettings(): RemoteArchiveSettings {
+        val state = _settingsState.value
+        return RemoteArchiveSettings(
+            readMode = state.remoteArchiveReadMode,
+            cachePolicy = state.remoteCachePolicy,
+            cacheLimitBytes = state.remoteCacheLimitMb.toLong() * 1024L * 1024L,
+            rangeBlockSizeBytes = state.remoteRangeBlockSizeKb * 1024,
+            allowBatchFullDownload = state.allowBatchRemoteFullDownload
+        )
+    }
+
+    private fun readRemoteArchiveReadMode(): RemoteArchiveReadMode = runCatching {
+        RemoteArchiveReadMode.valueOf(
+            prefs.getString(
+                KEY_REMOTE_ARCHIVE_READ_MODE,
+                RemoteArchiveReadMode.RangeWithDownloadFallback.name
+            ).orEmpty()
+        )
+    }.getOrDefault(RemoteArchiveReadMode.RangeWithDownloadFallback)
+
+    private fun readRemoteCachePolicy(): RemoteCachePolicy = runCatching {
+        RemoteCachePolicy.valueOf(
+            prefs.getString(KEY_REMOTE_CACHE_POLICY, RemoteCachePolicy.Lru.name).orEmpty()
+        )
+    }.getOrDefault(RemoteCachePolicy.Lru)
+
+    override fun onCleared() {
+        readerOpenJob?.cancel()
+        readerArchiveSession?.close()
+        readerArchiveSession = null
+        super.onCleared()
+    }
+
     private data class BookPagingQuery(
         val enabled: Boolean = false,
         val sourceIds: List<String> = emptyList(),
@@ -2855,6 +3099,12 @@ class AppViewModel(
         private const val KEY_LIBRARY_LAYOUT_MODE = "library_layout_mode"
         private const val KEY_LIBRARY_GRID_COLUMNS = "library_grid_columns"
         private const val KEY_BOOK_SORT_MODE = "book_sort_mode"
+        private const val KEY_LOCAL_ARCHIVE_AVAILABILITY_CHECK_V3 = "local_archive_availability_check_v3"
+        private const val KEY_REMOTE_ARCHIVE_READ_MODE = "remote_archive_read_mode"
+        private const val KEY_REMOTE_CACHE_POLICY = "remote_cache_policy"
+        private const val KEY_REMOTE_CACHE_LIMIT_MB = "remote_cache_limit_mb"
+        private const val KEY_REMOTE_RANGE_BLOCK_SIZE_KB = "remote_range_block_size_kb"
+        private const val KEY_ALLOW_BATCH_REMOTE_FULL_DOWNLOAD = "allow_batch_remote_full_download"
         private const val KEY_FILTERED_MATCH_LANGUAGES = "filtered_match_languages"
         private const val KEY_MATCH_SEARCH_TIMEOUT_SECONDS = "match_search_timeout_seconds"
         private const val DEFAULT_MATCH_SEARCH_TIMEOUT_SECONDS = 30

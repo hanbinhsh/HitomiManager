@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -34,13 +35,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ice.hitomimanager.SettingsUiState
 import com.ice.hitomimanager.data.model.LibraryLayoutMode
 import com.ice.hitomimanager.data.model.LibrarySource
+import com.ice.hitomimanager.data.model.LibrarySourceType
+import com.ice.hitomimanager.data.model.RemoteArchiveReadMode
+import com.ice.hitomimanager.data.model.RemoteCachePolicy
+import com.ice.hitomimanager.data.model.RemoteIndexMode
 import com.ice.hitomimanager.data.model.SettingsTab
+import com.ice.hitomimanager.data.model.WebDavSourceForm
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.FilterChip
@@ -61,6 +68,8 @@ fun SettingsScreen(
     onRenameSource: (String, String) -> Unit,
     onDeleteSource: (String) -> Unit,
     onScanSource: (String) -> Unit,
+    onSaveWebDavSource: (WebDavSourceForm) -> Unit,
+    onTestWebDavSource: (WebDavSourceForm) -> Unit,
     onShowTagNamespacePrefixChange: (Boolean) -> Unit,
     onDistinguishGenderTagsChange: (Boolean) -> Unit,
     onRemoveUnderscoreInMatchTitleChange: (Boolean) -> Unit,
@@ -84,6 +93,12 @@ fun SettingsScreen(
     onFilteredMatchLanguagesChange: (String) -> Unit,
     onMatchSearchTimeoutSecondsChange: (String) -> Unit,
     onBatchMatchThreadsChange: (String) -> Unit,
+    onRemoteArchiveReadModeChange: (RemoteArchiveReadMode) -> Unit,
+    onRemoteCachePolicyChange: (RemoteCachePolicy) -> Unit,
+    onRemoteCacheLimitMbChange: (String) -> Unit,
+    onRemoteRangeBlockSizeKbChange: (String) -> Unit,
+    onAllowBatchRemoteFullDownloadChange: (Boolean) -> Unit,
+    onClearRemoteArchiveCache: () -> Unit,
 ) {
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -117,6 +132,47 @@ fun SettingsScreen(
     }
     var showCleanupMissingDialog by remember {
         mutableStateOf(false)
+    }
+    var showSourceTypeDialog by remember { mutableStateOf(false) }
+    var webDavForm by remember { mutableStateOf<WebDavSourceForm?>(null) }
+
+    if (showSourceTypeDialog) {
+        AlertDialog(
+            onDismissRequest = { showSourceTypeDialog = false },
+            title = { Text("添加书库来源") },
+            text = { Text("选择本地目录或 WebDAV 网络目录。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showSourceTypeDialog = false
+                        folderPicker.launch(null)
+                    }
+                ) { Text("本地目录") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showSourceTypeDialog = false
+                        webDavForm = WebDavSourceForm()
+                    }
+                ) { Text("WebDAV") }
+            }
+        )
+    }
+
+    webDavForm?.let { form ->
+        WebDavSourceDialog(
+            form = form,
+            isTesting = state.isTestingWebDav,
+            testMessage = state.webDavMessage,
+            onFormChange = { webDavForm = it },
+            onTest = onTestWebDavSource,
+            onSave = {
+                onSaveWebDavSource(it)
+                webDavForm = null
+            },
+            onDismiss = { webDavForm = null }
+        )
     }
 
     if (showClearDatabaseDialog) {
@@ -230,13 +286,36 @@ fun SettingsScreen(
                     GeneralSettingsContent(
                         state = state,
                         onPickFolder = {
-                            folderPicker.launch(null)
+                            showSourceTypeDialog = true
                         },
                         onRenameSource = onRenameSource,
                         onDeleteSource = onDeleteSource,
-                        onScanSource = onScanSource
+                        onScanSource = onScanSource,
+                        onEditWebDav = { source ->
+                            webDavForm = WebDavSourceForm(
+                                editingSourceId = source.id,
+                                name = source.name,
+                                baseUrl = source.webDavBaseUrl.orEmpty(),
+                                rootPath = source.webDavRootPath.orEmpty().ifBlank { "/" },
+                                username = source.webDavUsername.orEmpty(),
+                                allowInsecureTls = source.webDavAllowInsecureTls,
+                                indexMode = source.remoteIndexMode,
+                                connectTimeoutSecondsText = source.connectTimeoutSeconds.toString(),
+                                readTimeoutSecondsText = source.readTimeoutSeconds.toString()
+                            )
+                        }
                     )
                 }
+
+                SettingsTab.Reading -> ReadingSettingsContent(
+                    state = state,
+                    onReadModeChange = onRemoteArchiveReadModeChange,
+                    onCachePolicyChange = onRemoteCachePolicyChange,
+                    onCacheLimitChange = onRemoteCacheLimitMbChange,
+                    onBlockSizeChange = onRemoteRangeBlockSizeKbChange,
+                    onAllowBatchFullDownloadChange = onAllowBatchRemoteFullDownloadChange,
+                    onClearCache = onClearRemoteArchiveCache
+                )
 
                 SettingsTab.Database -> {
                     DatabaseSettingsContent(
@@ -307,7 +386,8 @@ private fun GeneralSettingsContent(
     onPickFolder: () -> Unit,
     onRenameSource: (String, String) -> Unit,
     onDeleteSource: (String) -> Unit,
-    onScanSource: (String) -> Unit
+    onScanSource: (String) -> Unit,
+    onEditWebDav: (LibrarySource) -> Unit
 ) {
     var renamingSource by remember {
         mutableStateOf<LibrarySource?>(null)
@@ -368,10 +448,10 @@ private fun GeneralSettingsContent(
 
         ListItem(
             headlineContent = {
-                Text("添加本地目录")
+                Text("添加书库来源")
             },
             supportingContent = {
-                Text("选择存放 zip / cbz 文件的目录，可添加多个。")
+                Text("可添加多个本地目录或 WebDAV 网络目录。")
             },
             trailingContent = {
                 Button(
@@ -404,9 +484,17 @@ private fun GeneralSettingsContent(
                     },
                     onDelete = {
                         onDeleteSource(source.id)
-                    }
+                    },
+                    onEditWebDav = { onEditWebDav(source) }
                 )
             }
+        }
+
+        state.webDavMessage?.let { message ->
+            ListItem(
+                headlineContent = { Text("WebDAV 状态") },
+                supportingContent = { Text(message) }
+            )
         }
     }
 }
@@ -502,7 +590,8 @@ private fun SourceSettingsItem(
     source: LibrarySource,
     onRename: () -> Unit,
     onScan: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEditWebDav: () -> Unit
 ) {
     ListItem(
         headlineContent = {
@@ -514,7 +603,17 @@ private fun SourceSettingsItem(
         },
         supportingContent = {
             Text(
-                text = source.rootUriString,
+                text = if (source.type == LibrarySourceType.WebDav) {
+                    buildString {
+                        append(source.webDavBaseUrl.orEmpty())
+                        append(source.webDavRootPath.orEmpty())
+                        if (!source.webDavUsername.isNullOrBlank() && !source.hasStoredPassword) {
+                            append("\n未保存密码，请编辑连接后重新输入")
+                        }
+                    }
+                } else {
+                    source.rootUriString
+                },
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -531,6 +630,9 @@ private fun SourceSettingsItem(
                     TextButton(onClick = onRename) {
                         Text("重命名")
                     }
+                }
+                if (source.type == LibrarySourceType.WebDav) {
+                    TextButton(onClick = onEditWebDav) { Text("编辑连接") }
                 }
                 TextButton(onClick = onDelete) {
                     Text("删除来源")
@@ -961,8 +1063,256 @@ private fun settingsTabLabel(
 ): String {
     return when (tab) {
         SettingsTab.Directory -> "目录"
+        SettingsTab.Reading -> "阅读"
         SettingsTab.Display -> "显示"
         SettingsTab.Match -> "匹配"
         SettingsTab.Database -> "数据库"
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val kib = bytes / 1024.0
+    if (kib < 1024.0) return String.format(Locale.US, "%.1f KiB", kib)
+    val mib = kib / 1024.0
+    if (mib < 1024.0) return String.format(Locale.US, "%.1f MiB", mib)
+    return String.format(Locale.US, "%.2f GiB", mib / 1024.0)
+}
+
+@Composable
+private fun WebDavSourceDialog(
+    form: WebDavSourceForm,
+    isTesting: Boolean,
+    testMessage: String?,
+    onFormChange: (WebDavSourceForm) -> Unit,
+    onTest: (WebDavSourceForm) -> Unit,
+    onSave: (WebDavSourceForm) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (form.editingSourceId == null) "添加 WebDAV" else "编辑 WebDAV") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = form.name,
+                    onValueChange = { onFormChange(form.copy(name = it)) },
+                    label = { Text("名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = form.baseUrl,
+                    onValueChange = { onFormChange(form.copy(baseUrl = it)) },
+                    label = { Text("服务器地址") },
+                    placeholder = { Text("https://example.com") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = form.rootPath,
+                    onValueChange = { onFormChange(form.copy(rootPath = it)) },
+                    label = { Text("扫描根路径") },
+                    placeholder = { Text("/dav/books") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = form.username,
+                    onValueChange = { onFormChange(form.copy(username = it)) },
+                    label = { Text("用户名（可选）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = form.password,
+                    onValueChange = { onFormChange(form.copy(password = it)) },
+                    label = { Text(if (form.editingSourceId == null) "密码（可选）" else "新密码（留空保持不变）") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("允许不受信任证书")
+                        Text(
+                            "仅用于确认可信的自签名 NAS",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = form.allowInsecureTls,
+                        onCheckedChange = { onFormChange(form.copy(allowInsecureTls = it)) }
+                    )
+                }
+                Text("索引模式", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = form.indexMode == RemoteIndexMode.Full,
+                        onClick = { onFormChange(form.copy(indexMode = RemoteIndexMode.Full)) },
+                        label = { Text("完整") }
+                    )
+                    FilterChip(
+                        selected = form.indexMode == RemoteIndexMode.Light,
+                        onClick = { onFormChange(form.copy(indexMode = RemoteIndexMode.Light)) },
+                        label = { Text("轻量") }
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = form.connectTimeoutSecondsText,
+                        onValueChange = { onFormChange(form.copy(connectTimeoutSecondsText = it.filter(Char::isDigit))) },
+                        label = { Text("连接超时/秒") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = form.readTimeoutSecondsText,
+                        onValueChange = { onFormChange(form.copy(readTimeoutSecondsText = it.filter(Char::isDigit))) },
+                        label = { Text("读取超时/秒") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                testMessage?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(form) },
+                enabled = form.baseUrl.isNotBlank() && !isTesting
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick = { onTest(form) },
+                    enabled = form.baseUrl.isNotBlank() && !isTesting
+                ) { Text(if (isTesting) "测试中" else "测试连接") }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    )
+}
+
+@Composable
+private fun ReadingSettingsContent(
+    state: SettingsUiState,
+    onReadModeChange: (RemoteArchiveReadMode) -> Unit,
+    onCachePolicyChange: (RemoteCachePolicy) -> Unit,
+    onCacheLimitChange: (String) -> Unit,
+    onBlockSizeChange: (String) -> Unit,
+    onAllowBatchFullDownloadChange: (Boolean) -> Unit,
+    onClearCache: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        SectionTitle("远程压缩包读取")
+        ListItem(
+            headlineContent = { Text("读取策略") },
+            supportingContent = {
+                Column {
+                    RemoteArchiveReadMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = state.remoteArchiveReadMode == mode,
+                            onClick = { onReadModeChange(mode) },
+                            label = {
+                                Text(
+                                    when (mode) {
+                                        RemoteArchiveReadMode.RangeWithDownloadFallback -> "Range 优先，失败时下载"
+                                        RemoteArchiveReadMode.RangeOnly -> "仅 Range"
+                                        RemoteArchiveReadMode.DownloadOnly -> "总是完整下载"
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        )
+        ListItem(
+            headlineContent = { Text("批量匹配允许完整下载") },
+            supportingContent = { Text("关闭时，批量任务不会为了读取页数而下载整个远程压缩包。") },
+            trailingContent = {
+                Switch(
+                    checked = state.allowBatchRemoteFullDownload,
+                    onCheckedChange = onAllowBatchFullDownloadChange
+                )
+            }
+        )
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        SectionTitle("远程缓存")
+        ListItem(
+            headlineContent = { Text("缓存策略") },
+            supportingContent = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RemoteCachePolicy.entries.forEach { policy ->
+                        FilterChip(
+                            selected = state.remoteCachePolicy == policy,
+                            onClick = { onCachePolicyChange(policy) },
+                            label = {
+                                Text(
+                                    when (policy) {
+                                        RemoteCachePolicy.Lru -> "LRU"
+                                        RemoteCachePolicy.Session -> "仅本次"
+                                        RemoteCachePolicy.Persistent -> "永久"
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        )
+        ListItem(
+            headlineContent = { Text("缓存上限") },
+            supportingContent = {
+                OutlinedTextField(
+                    value = state.remoteCacheLimitMbText,
+                    onValueChange = onCacheLimitChange,
+                    suffix = { Text("MB") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        )
+        ListItem(
+            headlineContent = { Text("Range 分块大小") },
+            supportingContent = {
+                OutlinedTextField(
+                    value = state.remoteRangeBlockSizeKbText,
+                    onValueChange = onBlockSizeChange,
+                    suffix = { Text("KiB") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        )
+        ListItem(
+            headlineContent = { Text("已用 ${formatBytes(state.remoteCacheUsageBytes)}") },
+            supportingContent = { Text("清理远程 Range 块与完整压缩包，不删除封面和数据库。") },
+            trailingContent = {
+                Button(onClick = onClearCache) { Text("清理") }
+            }
+        )
     }
 }

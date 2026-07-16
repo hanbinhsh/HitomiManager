@@ -7,6 +7,7 @@ fun BookEntity.toBookItem(): BookItem {
         displayName = displayName,
         uriString = uriString,
         coverFilePath = coverFilePath,
+        fileSize = fileSize,
         lastModified = lastModified,
         createdAt = createdAt,
         updatedAt = updatedAt,
@@ -21,6 +22,8 @@ fun BookEntity.toBookItem(): BookItem {
         language = language,
         type = type,
         pageCount = pageCount,
+        localPageCount = localPageCount,
+        remoteEtag = remoteEtag,
         matchStatus = matchStatus
     )
 }

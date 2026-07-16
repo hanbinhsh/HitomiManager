@@ -14,6 +14,9 @@ import com.ice.hitomimanager.data.model.LibrarySourceScope
 import com.ice.hitomimanager.data.model.MatchTaskFilter
 import com.ice.hitomimanager.data.model.PageInfo
 import com.ice.hitomimanager.data.model.SettingsTab
+import com.ice.hitomimanager.data.model.RemoteArchiveReadMode
+import com.ice.hitomimanager.data.model.RemoteCachePolicy
+import com.ice.hitomimanager.data.model.RemoteReaderProgress
 import com.ice.hitomimanager.data.model.TagCountItem
 import com.ice.hitomimanager.data.model.TagFilterTab
 import com.ice.hitomimanager.data.model.TagSortMode
@@ -83,7 +86,17 @@ data class SettingsUiState(
     val matchSearchTimeoutSecondsText: String = "30",
     val matchSearchTimeoutSeconds: Int = 30,
     val batchMatchThreadsText: String = "1",
-    val batchMatchThreads: Int = 1
+    val batchMatchThreads: Int = 1,
+    val remoteArchiveReadMode: RemoteArchiveReadMode = RemoteArchiveReadMode.RangeWithDownloadFallback,
+    val remoteCachePolicy: RemoteCachePolicy = RemoteCachePolicy.Lru,
+    val remoteCacheLimitMbText: String = "2048",
+    val remoteCacheLimitMb: Int = 2048,
+    val remoteRangeBlockSizeKbText: String = "512",
+    val remoteRangeBlockSizeKb: Int = 512,
+    val allowBatchRemoteFullDownload: Boolean = false,
+    val remoteCacheUsageBytes: Long = 0L,
+    val webDavMessage: String? = null,
+    val isTestingWebDav: Boolean = false
 )
 
 data class ReaderUiState(
@@ -94,6 +107,7 @@ data class ReaderUiState(
     val pageInfos: Map<Int, PageInfo> = emptyMap(),
     val loadingPageIndices: Set<Int> = emptySet(),
     val isOpening: Boolean = false,
+    val remoteProgress: RemoteReaderProgress? = null,
     val error: String? = null
 )
 
@@ -107,6 +121,7 @@ data class MatchUiState(
     val sourceTaskId: Long? = null,
     val query: String = "",
     val localPageCount: Int? = null,
+    val remoteProgress: RemoteReaderProgress? = null,
     val candidates: List<HitomiBookMeta> = emptyList(),
     val isSearching: Boolean = false,
     val isBinding: Boolean = false,

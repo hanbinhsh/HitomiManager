@@ -9,6 +9,19 @@ import com.ice.hitomimanager.data.local.entity.MatchCandidateEntity
 import com.ice.hitomimanager.data.local.entity.MatchTaskEntity
 import kotlinx.coroutines.flow.Flow
 
+private const val ACTIVE_TASK_BOOK_FILTER = """
+AND EXISTS (
+    SELECT 1
+    FROM book AS active_book
+    INNER JOIN library_source AS active_source ON active_source.id = active_book.sourceId
+    WHERE active_book.uriString = match_task.bookUriString
+      AND (
+          active_source.lastCompletedScanAt IS NULL
+          OR active_book.lastSeenAt >= active_source.lastCompletedScanAt
+      )
+)
+"""
+
 data class MatchTaskStatusCount(
     val status: String,
     val count: Int
@@ -22,6 +35,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
     ORDER BY updatedAt DESC, id DESC
     """
     )
@@ -35,6 +49,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
       AND status IN (:statuses)
     ORDER BY updatedAt DESC, id DESC
     """
@@ -50,6 +65,7 @@ interface MatchTaskDao {
     SELECT status, COUNT(*) AS count
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
     GROUP BY status
     """
     )
@@ -63,6 +79,7 @@ interface MatchTaskDao {
     SELECT status, COUNT(*) AS count
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
     GROUP BY status
     """
     )
@@ -121,6 +138,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
       AND status IN (:statuses)
     ORDER BY updatedAt DESC, id DESC
     """
@@ -136,6 +154,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
       AND status = :status
       AND (
           updatedAt < :currentUpdatedAt
@@ -158,6 +177,7 @@ interface MatchTaskDao {
     SELECT *
     FROM match_task
     WHERE (:sourceCount = 0 OR libraryRootUriString IN (:sourceIds))
+    """ + ACTIVE_TASK_BOOK_FILTER + """
       AND status = :status
       AND id != :currentTaskId
     ORDER BY updatedAt DESC, id DESC

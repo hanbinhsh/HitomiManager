@@ -189,12 +189,14 @@ fun AppRoot(
             ReaderScreen(
                 state = readerState,
                 onBack = {
+                    viewModel.closeReader()
                     navController.popBackStack()
                 },
                 onPageChanged = viewModel::onReaderPageChanged,
                 onPagePreviewRequested = viewModel::ensureReaderPageLoaded,
                 onBackToDetail = {
                     val book = readerState.book
+                    viewModel.closeReader()
                     if (settingsState.openBookDirectlyInReader && book != null) {
                         pendingDetailBookUri = book.uriString
                         viewModel.openBookDetail(book)
@@ -206,6 +208,9 @@ fun AppRoot(
                     } else {
                         navController.popBackStack()
                     }
+                },
+                onRetry = {
+                    readerState.book?.let(viewModel::openBook)
                 }
             )
         }
@@ -261,6 +266,8 @@ fun AppRoot(
                 onRenameSource = viewModel::renameSource,
                 onDeleteSource = viewModel::removeSourceConfiguration,
                 onScanSource = viewModel::scanSource,
+                onSaveWebDavSource = viewModel::saveWebDavSource,
+                onTestWebDavSource = viewModel::testWebDavSource,
                 onShowTagNamespacePrefixChange = viewModel::setShowTagNamespacePrefix,
                 onDistinguishGenderTagsChange = viewModel::setDistinguishGenderTags,
                 onRemoveUnderscoreInMatchTitleChange = viewModel::setRemoveUnderscoreInMatchTitle,
@@ -283,6 +290,12 @@ fun AppRoot(
                 onFilteredMatchLanguagesChange = viewModel::setFilteredMatchLanguages,
                 onMatchSearchTimeoutSecondsChange = viewModel::setMatchSearchTimeoutSeconds,
                 onBatchMatchThreadsChange = viewModel::setBatchMatchThreads,
+                onRemoteArchiveReadModeChange = viewModel::setRemoteArchiveReadMode,
+                onRemoteCachePolicyChange = viewModel::setRemoteCachePolicy,
+                onRemoteCacheLimitMbChange = viewModel::setRemoteCacheLimitMb,
+                onRemoteRangeBlockSizeKbChange = viewModel::setRemoteRangeBlockSizeKb,
+                onAllowBatchRemoteFullDownloadChange = viewModel::setAllowBatchRemoteFullDownload,
+                onClearRemoteArchiveCache = viewModel::clearRemoteArchiveCache,
                 onOpenTasks = {
                     viewModel.setHomeTab(HomeTab.Tasks)
                     navController.popBackStack()

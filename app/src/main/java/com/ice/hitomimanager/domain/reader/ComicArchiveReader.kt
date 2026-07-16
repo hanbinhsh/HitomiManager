@@ -38,7 +38,7 @@ object ComicArchiveReader {
                 while (true) {
                     val entry = zip.nextEntry ?: break
 
-                    if (!entry.isDirectory && isImageEntry(entry.name)) {
+                    if (!entry.isDirectory && isImageEntryName(entry.name)) {
                         pages += entry.name
                     }
 
@@ -216,7 +216,7 @@ object ComicArchiveReader {
         }
     }
 
-    private fun isImageEntry(name: String): Boolean {
+    fun isImageEntryName(name: String): Boolean {
         val normalized = name.replace("\\", "/")
         val lower = normalized.lowercase()
         val fileName = lower.substringAfterLast('/')

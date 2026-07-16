@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         LibrarySourceEntity::class,
         LibraryFolderEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -83,6 +83,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE library_source ADD COLUMN webDavBaseUrl TEXT")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN webDavRootPath TEXT")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN webDavUsername TEXT")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN webDavAllowInsecureTls INTEGER")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN remoteIndexMode TEXT")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN connectTimeoutSeconds INTEGER")
+                db.execSQL("ALTER TABLE library_source ADD COLUMN readTimeoutSeconds INTEGER")
+                db.execSQL("ALTER TABLE book ADD COLUMN localPageCount INTEGER")
+                db.execSQL("ALTER TABLE book ADD COLUMN remoteEtag TEXT")
+            }
+        }
+
         fun get(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -90,7 +104,13 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hitomi_manager.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
+                    )
                     .build()
                     .also {
                         INSTANCE = it

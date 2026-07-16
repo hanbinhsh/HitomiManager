@@ -48,6 +48,14 @@ interface TagDao {
     INNER JOIN book_tag ON tag.`key` = book_tag.tagKey
     INNER JOIN book ON book.uriString = book_tag.bookUriString
     WHERE (:sourceCount = 0 OR book.sourceId IN (:sourceIds))
+      AND EXISTS (
+          SELECT 1 FROM library_source AS active_source
+          WHERE active_source.id = book.sourceId
+            AND (
+                active_source.lastCompletedScanAt IS NULL
+                OR book.lastSeenAt >= active_source.lastCompletedScanAt
+            )
+      )
     GROUP BY tag.`key`, tag.namespace, tag.name, tag.translatedName
     """
     )
@@ -68,6 +76,14 @@ interface TagDao {
     INNER JOIN book_tag ON tag.`key` = book_tag.tagKey
     INNER JOIN book ON book.uriString = book_tag.bookUriString
     WHERE (:sourceCount = 0 OR book.sourceId IN (:sourceIds))
+      AND EXISTS (
+          SELECT 1 FROM library_source AS active_source
+          WHERE active_source.id = book.sourceId
+            AND (
+                active_source.lastCompletedScanAt IS NULL
+                OR book.lastSeenAt >= active_source.lastCompletedScanAt
+            )
+      )
       AND tag.namespace IN ('male', 'female')
     GROUP BY LOWER(tag.name)
     """

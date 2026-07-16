@@ -35,6 +35,8 @@ data class BookEntity(
     val language: String? = null,
     val type: String? = null,
     val pageCount: Int? = null,
+    val localPageCount: Int? = null,
+    val remoteEtag: String? = null,
 
     // unmatched / candidate_found / auto_matched / manual_matched / failed
     val matchStatus: String = "unmatched",

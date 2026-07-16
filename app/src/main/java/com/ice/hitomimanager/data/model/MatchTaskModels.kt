@@ -21,6 +21,7 @@ enum class MatchTaskFilter {
 
 enum class SettingsTab {
     Directory,
+    Reading,
     Display,
     Match,
     Database
